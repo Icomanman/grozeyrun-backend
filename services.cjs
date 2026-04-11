@@ -13,7 +13,8 @@
  */
 
 const express = require('express');
-const { supabase, sql } = require('./db');
+const { supabase } = require('./auth');
+const { sql } = require('./db');
 const { validateSyncPayload, validateOwnership } = require('./validations.cjs');
 
 // Increment this constant in constants/index.ts on the mobile app for breaking changes.
@@ -194,11 +195,11 @@ const syncPush = async (req, res) => {
             // shared list — user_id of each share is the invited party, not the owner.
             if (list_shares_storage?.length > 0) {
                 const shareRows = list_shares_storage.map((s) => ({
-                    id:              s.id,
+                    id: s.id,
                     grocery_list_id: s.grocery_list_id,
-                    invited_at:      s.invited_at  ?? new Date(),
-                    permission:      s.permission,
-                    user_id:         s.user_id,
+                    invited_at: s.invited_at ?? new Date(),
+                    permission: s.permission,
+                    user_id: s.user_id,
                 }));
                 await tx`INSERT INTO public.list_shares ${tx(shareRows)}`;
             }
@@ -273,11 +274,11 @@ const syncPull = async (req, res) => {
         return res.status(200).json({
             success: true,
             data: {
-                users_storage:       users[0]    ?? null,
-                app_settings:        settings[0] ?? null,
-                lists_storage:       lists,
+                users_storage: users[0] ?? null,
+                app_settings: settings[0] ?? null,
+                lists_storage: lists,
                 items_storage,
-                runs_storage:        runs,
+                runs_storage: runs,
                 list_shares_storage: shares,
             },
             message: 'Sync successful.',
