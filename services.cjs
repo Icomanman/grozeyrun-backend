@@ -13,36 +13,13 @@
  */
 
 const express = require('express');
-const { supabase } = require('./auth');
-const { sql } = require('./db');
+const authMiddleware = require('./auth.cjs');
+
+const { sql } = require('./db.cjs');
 const { validateSyncPayload, validateOwnership } = require('./validations.cjs');
 
 // Increment this constant in constants/index.ts on the mobile app for breaking changes.
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1]);
-
-/**
- * Auth middleware — verifies the Supabase JWT in Authorization: Bearer <token>.
- * Attaches the authenticated user.id to req.userId for downstream handlers.
- * owner_id is NEVER accepted from the request body (ADR-001).
- */
-const authMiddleware = async (req, res, next) => {
-    const header = req.headers['authorization'];
-    if (!header || !header.startsWith('Bearer ')) {
-        return res.status(401).json({ success: false, message: 'Missing or invalid Authorization header.' });
-    }
-    const token = header.slice(7);
-    try {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
-        if (error || !user) {
-            return res.status(401).json({ success: false, message: 'Invalid or expired token.' });
-        }
-        req.userId = user.id;
-        next();
-    } catch (err) {
-        console.error('[auth] unexpected error:', err.message);
-        return res.status(500).json({ success: false, message: 'Authentication error.' });
-    }
-};
 
 /**
  * POST /api/sync — full-state push (ADR-002).

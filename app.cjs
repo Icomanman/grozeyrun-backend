@@ -1,15 +1,15 @@
 'use strict';
 
-const express = require('express');
 const env = require('dotenv');
+env.config({ path: './.env' });
+
+const express = require('express');
 const services = require('./services.cjs');
 
 // Maximum accepted request body size — rejects oversized sync payloads (R3 fix)
 const MAX_PAYLOAD_SIZE = '1mb';
 
 (function main() {
-    env.config({ path: './.env' });
-
     const app = express();
     const PORT = process.env.PORT || 8080;
     const url = `http://localhost:${PORT}`;
