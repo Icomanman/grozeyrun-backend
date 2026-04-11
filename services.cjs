@@ -53,7 +53,8 @@ const authMiddleware = async (req, res, next) => {
  *   4. INSERT public.lists
  *   5. INSERT public.items  (items_storage is Record<listId, Item[]> — flattened here)
  *   6. INSERT public.runs
- *   7. INSERT public.sync_logs (success record)
+ *   7. INSERT public.list_shares
+ *   8. INSERT public.sync_logs (success record)
  *
  * Any failure rolls back the entire transaction (R5 fix).
  */
@@ -76,7 +77,7 @@ const syncPush = async (req, res) => {
     }
 
     const payloadSize = Buffer.byteLength(JSON.stringify(req.body), 'utf8');
-    const { items_storage, lists_storage, runs_storage, users_storage, app_settings } = data;
+    const { items_storage, lists_storage, runs_storage, users_storage, app_settings, list_shares_storage } = data;
 
     // items_storage arrives as Record<listId, ListItem[]> — flatten to a row array
     const flatItems = Object.values(items_storage ?? {}).flat();
@@ -137,15 +138,15 @@ const syncPush = async (req, res) => {
             // ── 4. Insert lists ─────────────────────────────────────────────────
             if (lists_storage?.length > 0) {
                 const listRows = lists_storage.map((l) => ({
-                    id:          l.id,
-                    created_at:  l.created_at  ?? new Date(),
+                    id: l.id,
+                    created_at: l.created_at ?? new Date(),
                     description: l.description ?? null,
-                    is_shared:   l.is_shared   ?? false,
-                    item_count:  l.item_count  ?? 0,
-                    name:        l.name,
+                    is_shared: l.is_shared ?? false,
+                    item_count: l.item_count ?? 0,
+                    name: l.name,
                     owner_id,
-                    total_cost:  l.total_cost  ?? 0,
-                    updated_at:  l.updated_at  ?? new Date(),
+                    total_cost: l.total_cost ?? 0,
+                    updated_at: l.updated_at ?? new Date(),
                 }));
                 await tx`INSERT INTO public.lists ${tx(listRows)}`;
             }
@@ -153,19 +154,19 @@ const syncPush = async (req, res) => {
             // ── 5. Insert items (flattened from Record<listId, Item[]>) ──────────
             if (flatItems.length > 0) {
                 const itemRows = flatItems.map((item) => ({
-                    id:          item.id,
-                    category:    item.category    ?? null,
-                    completed:   item.completed   ?? false,
-                    created_at:  item.created_at  ?? new Date(),
-                    currency:    item.currency    ?? null,
+                    id: item.id,
+                    category: item.category ?? null,
+                    completed: item.completed ?? false,
+                    created_at: item.created_at ?? new Date(),
+                    currency: item.currency ?? null,
                     description: item.description ?? null,
-                    list_id:     item.list_id,
-                    notes:       item.notes       ?? null,
+                    list_id: item.list_id,
+                    notes: item.notes ?? null,
                     owner_id,
-                    quantity:    item.quantity    ?? null,
-                    text:        item.text,
-                    unit_price:  item.unit_price  ?? null,
-                    updated_at:  item.updated_at  ?? new Date(),
+                    quantity: item.quantity ?? null,
+                    text: item.text,
+                    unit_price: item.unit_price ?? null,
+                    updated_at: item.updated_at ?? new Date(),
                 }));
                 await tx`INSERT INTO public.items ${tx(itemRows)}`;
             }
@@ -173,21 +174,36 @@ const syncPush = async (req, res) => {
             // ── 6. Insert runs ──────────────────────────────────────────────────
             if (runs_storage?.length > 0) {
                 const runRows = runs_storage.map((r) => ({
-                    id:              r.id,
+                    id: r.id,
                     completion_date: r.completion_date ?? null,
-                    created_at:      r.created_at      ?? new Date(),
-                    description:     r.description     ?? null,
-                    is_completed:    r.is_completed     ?? false,
-                    list_id:         r.list_id,
-                    name:            r.name             ?? null,
+                    created_at: r.created_at ?? new Date(),
+                    description: r.description ?? null,
+                    is_completed: r.is_completed ?? false,
+                    list_id: r.list_id,
+                    name: r.name ?? null,
                     owner_id,
-                    total_time:      r.total_time       ?? null,
-                    updated_at:      r.updated_at       ?? new Date(),
+                    total_time: r.total_time ?? null,
+                    updated_at: r.updated_at ?? new Date(),
                 }));
                 await tx`INSERT INTO public.runs ${tx(runRows)}`;
             }
 
-            // ── 7. Log the push (inside transaction — rolls back on failure) ────
+            // ── 7. Insert list_shares ───────────────────────────────────────────
+            // list_shares reference lists already inserted above, so they go last
+            // among the data tables. The authenticated user must be the owner of the
+            // shared list — user_id of each share is the invited party, not the owner.
+            if (list_shares_storage?.length > 0) {
+                const shareRows = list_shares_storage.map((s) => ({
+                    id:              s.id,
+                    grocery_list_id: s.grocery_list_id,
+                    invited_at:      s.invited_at  ?? new Date(),
+                    permission:      s.permission,
+                    user_id:         s.user_id,
+                }));
+                await tx`INSERT INTO public.list_shares ${tx(shareRows)}`;
+            }
+
+            // ── 8. Log the push (inside transaction — rolls back on failure) ────
             await tx`
                 INSERT INTO public.sync_logs
                     (id, data_size, schema_version, success, sync_type, user_id)
@@ -226,13 +242,17 @@ const syncPull = async (req, res) => {
     }
 
     try {
-        const [users, settings, lists, items, runs] = await Promise.all([
+        const [users, settings, lists, items, runs, shares] = await Promise.all([
             sql`SELECT id, email, first_name, last_name, created_at, updated_at
                 FROM public.users WHERE id = ${owner_id}`,
             sql`SELECT * FROM public.app_settings WHERE user_id = ${owner_id}`,
             sql`SELECT * FROM public.lists WHERE owner_id = ${owner_id}`,
             sql`SELECT * FROM public.items WHERE owner_id = ${owner_id}`,
             sql`SELECT * FROM public.runs  WHERE owner_id = ${owner_id}`,
+            // Return shares for lists this user owns only
+            sql`SELECT ls.* FROM public.list_shares ls
+                INNER JOIN public.lists l ON l.id = ls.grocery_list_id
+                WHERE l.owner_id = ${owner_id}`,
         ]);
 
         // Reconstruct items_storage as Record<listId, Item[]>
@@ -253,11 +273,12 @@ const syncPull = async (req, res) => {
         return res.status(200).json({
             success: true,
             data: {
-                users_storage: users[0]    ?? null,
-                app_settings:  settings[0] ?? null,
-                lists_storage: lists,
+                users_storage:       users[0]    ?? null,
+                app_settings:        settings[0] ?? null,
+                lists_storage:       lists,
                 items_storage,
-                runs_storage:  runs,
+                runs_storage:        runs,
+                list_shares_storage: shares,
             },
             message: 'Sync successful.',
         });

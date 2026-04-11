@@ -10,6 +10,8 @@
  */
 
 const REQUIRED_DATA_KEYS = ['items_storage', 'lists_storage', 'runs_storage', 'users_storage', 'app_settings'];
+// list_shares_storage is optional — omitting it is valid (no shares to sync)
+const OPTIONAL_ARRAY_KEYS = ['list_shares_storage'];
 
 /**
  * Validates the top-level structure of the sync data payload.
@@ -39,6 +41,11 @@ function validateSyncPayload(data) {
     }
     if (typeof data.app_settings !== 'object' || Array.isArray(data.app_settings)) {
         return 'data.app_settings must be a plain object.';
+    }
+    for (const key of OPTIONAL_ARRAY_KEYS) {
+        if (key in data && !Array.isArray(data[key])) {
+            return `data.${key} must be an array when present.`;
+        }
     }
     return null;
 }

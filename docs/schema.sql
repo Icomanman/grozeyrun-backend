@@ -5,16 +5,9 @@
 -- Source of truth: grozerun-mobile/docs/schema.md
 -- Supabase additions: auth.users FK, nullable password_hash, RLS, indexes.
 --
--- NOTE: list_shares is not included in the sync payload. On every full-state
--- push, all lists are deleted (cascading to list_shares) and re-inserted.
--- Sharing state will be cleared on each push until a list_shares_storage key
--- is added to the sync payload in a future schema version.
-
--- ===========================================================================
--- Cleanup (removes incorrect tables from initial backend commit)
--- ===========================================================================
-
-DROP TABLE IF EXISTS public.user_snapshots CASCADE;
+-- list_shares_storage is an optional key in the sync payload. When present,
+-- shares are re-inserted after lists. When absent, cascade-delete on lists
+-- clears all shares for that user (acceptable — no shares means no shares).
 
 -- ===========================================================================
 -- Enums
@@ -48,12 +41,8 @@ CREATE TABLE IF NOT EXISTS public.users (
     email         VARCHAR(255) UNIQUE NOT NULL,
     first_name    VARCHAR(100),
     last_name     VARCHAR(100),
-    password_hash VARCHAR(255),               -- nullable; Supabase Auth manages this
     updated_at    TIMESTAMP    DEFAULT NOW()
 );
-
--- If the table already exists with NOT NULL, relax the constraint
-ALTER TABLE public.users ALTER COLUMN password_hash DROP NOT NULL;
 
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.users FORCE ROW LEVEL SECURITY;
@@ -116,8 +105,8 @@ CREATE INDEX IF NOT EXISTS lists_owner_id_idx ON public.lists (owner_id);
 
 -- ===========================================================================
 -- Grocery List Shares
--- Not currently included in the sync payload. State is cleared on every push
--- and must be re-established out of band until list_shares_storage is added.
+-- Included in list_shares_storage in the sync payload (optional key).
+-- On push: cascade-deleted with lists, then re-inserted from list_shares_storage.
 -- ===========================================================================
 
 CREATE TABLE IF NOT EXISTS public.list_shares (
