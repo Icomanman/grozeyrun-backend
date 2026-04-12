@@ -48,9 +48,11 @@ ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.users FORCE ROW LEVEL SECURITY;
 
 -- auth.uid() wrapped in SELECT so it is evaluated once per statement, not per row
-CREATE POLICY IF NOT EXISTS "users_self_only"
-    ON public.users FOR ALL TO authenticated
-    USING ((SELECT auth.uid()) = id);
+DO $$ BEGIN
+    CREATE POLICY "users_self_only"
+        ON public.users FOR ALL TO authenticated
+        USING ((SELECT auth.uid()) = id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ===========================================================================
 -- App Settings
@@ -72,9 +74,11 @@ CREATE TABLE IF NOT EXISTS public.app_settings (
 ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.app_settings FORCE ROW LEVEL SECURITY;
 
-CREATE POLICY IF NOT EXISTS "app_settings_self_only"
-    ON public.app_settings FOR ALL TO authenticated
-    USING ((SELECT auth.uid()) = user_id);
+DO $$ BEGIN
+    CREATE POLICY "app_settings_self_only"
+        ON public.app_settings FOR ALL TO authenticated
+        USING ((SELECT auth.uid()) = user_id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ===========================================================================
 -- Grocery Lists
@@ -97,9 +101,11 @@ CREATE TABLE IF NOT EXISTS public.lists (
 ALTER TABLE public.lists ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.lists FORCE ROW LEVEL SECURITY;
 
-CREATE POLICY IF NOT EXISTS "lists_self_only"
-    ON public.lists FOR ALL TO authenticated
-    USING ((SELECT auth.uid()) = owner_id);
+DO $$ BEGIN
+    CREATE POLICY "lists_self_only"
+        ON public.lists FOR ALL TO authenticated
+        USING ((SELECT auth.uid()) = owner_id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE INDEX IF NOT EXISTS lists_owner_id_idx ON public.lists (owner_id);
 
@@ -126,14 +132,16 @@ ALTER TABLE public.list_shares ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.list_shares FORCE ROW LEVEL SECURITY;
 
 -- Users may see shares for lists they own OR shares that involve them
-CREATE POLICY IF NOT EXISTS "list_shares_access"
-    ON public.list_shares FOR ALL TO authenticated
-    USING (
-        (SELECT auth.uid()) = user_id
-        OR (SELECT auth.uid()) IN (
-            SELECT owner_id FROM public.lists WHERE id = grocery_list_id
-        )
-    );
+DO $$ BEGIN
+    CREATE POLICY "list_shares_access"
+        ON public.list_shares FOR ALL TO authenticated
+        USING (
+            (SELECT auth.uid()) = user_id
+            OR (SELECT auth.uid()) IN (
+                SELECT owner_id FROM public.lists WHERE id = grocery_list_id
+            )
+        );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE INDEX IF NOT EXISTS list_shares_list_id_idx    ON public.list_shares (grocery_list_id);
 CREATE INDEX IF NOT EXISTS list_shares_user_id_idx    ON public.list_shares (user_id);
@@ -165,9 +173,11 @@ CREATE TABLE IF NOT EXISTS public.items (
 ALTER TABLE public.items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.items FORCE ROW LEVEL SECURITY;
 
-CREATE POLICY IF NOT EXISTS "items_self_only"
-    ON public.items FOR ALL TO authenticated
-    USING ((SELECT auth.uid()) = owner_id);
+DO $$ BEGIN
+    CREATE POLICY "items_self_only"
+        ON public.items FOR ALL TO authenticated
+        USING ((SELECT auth.uid()) = owner_id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE INDEX IF NOT EXISTS items_owner_id_idx ON public.items (owner_id);
 CREATE INDEX IF NOT EXISTS items_list_id_idx  ON public.items (list_id);
@@ -196,9 +206,11 @@ CREATE TABLE IF NOT EXISTS public.runs (
 ALTER TABLE public.runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.runs FORCE ROW LEVEL SECURITY;
 
-CREATE POLICY IF NOT EXISTS "runs_self_only"
-    ON public.runs FOR ALL TO authenticated
-    USING ((SELECT auth.uid()) = owner_id);
+DO $$ BEGIN
+    CREATE POLICY "runs_self_only"
+        ON public.runs FOR ALL TO authenticated
+        USING ((SELECT auth.uid()) = owner_id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE INDEX IF NOT EXISTS runs_owner_id_idx ON public.runs (owner_id);
 CREATE INDEX IF NOT EXISTS runs_list_id_idx  ON public.runs (list_id);
@@ -226,9 +238,11 @@ CREATE TABLE IF NOT EXISTS public.sync_logs (
 ALTER TABLE public.sync_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.sync_logs FORCE ROW LEVEL SECURITY;
 
-CREATE POLICY IF NOT EXISTS "sync_logs_self_read"
-    ON public.sync_logs FOR SELECT TO authenticated
-    USING ((SELECT auth.uid()) = user_id);
+DO $$ BEGIN
+    CREATE POLICY "sync_logs_self_read"
+        ON public.sync_logs FOR SELECT TO authenticated
+        USING ((SELECT auth.uid()) = user_id);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- Composite index covers "show me my recent sync history" queries
 CREATE INDEX IF NOT EXISTS sync_logs_user_time_idx ON public.sync_logs (user_id, sync_time DESC);
