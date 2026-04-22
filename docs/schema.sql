@@ -162,6 +162,7 @@ CREATE TABLE IF NOT EXISTS public.items (
     owner_id    UUID          NOT NULL,
     quantity    INTEGER,
     text        VARCHAR(100)  NOT NULL,
+    unit        VARCHAR(20),
     unit_price  NUMERIC(10,2),
     updated_at  TIMESTAMP     DEFAULT NOW(),
     CONSTRAINT fk_items_list

@@ -143,6 +143,7 @@ const syncPush = async (req, res) => {
                     owner_id,
                     quantity: item.quantity ?? null,
                     text: item.text,
+                    unit: item.unit ?? null,
                     unit_price: item.unit_price ?? null,
                     updated_at: item.updated_at ?? new Date(),
                 }));
