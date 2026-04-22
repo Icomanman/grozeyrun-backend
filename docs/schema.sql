@@ -15,18 +15,10 @@
 
 DO $$ BEGIN
     CREATE TYPE period_type AS ENUM ('weekly', 'monthly');
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-DO $$ BEGIN
     CREATE TYPE theme_type AS ENUM ('light', 'dark');
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-DO $$ BEGIN
     CREATE TYPE permission_type AS ENUM ('view', 'edit');
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-DO $$ BEGIN
     CREATE TYPE sync_type AS ENUM ('pull', 'push');
+    CREATE TYPE unit_type AS ENUM ('pull', 'push');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ===========================================================================
@@ -162,7 +154,7 @@ CREATE TABLE IF NOT EXISTS public.items (
     owner_id    UUID          NOT NULL,
     quantity    INTEGER,
     text        VARCHAR(100)  NOT NULL,
-    unit        VARCHAR(20),
+    unit        unit_type,
     unit_price  NUMERIC(10,2),
     updated_at  TIMESTAMP     DEFAULT NOW(),
     CONSTRAINT fk_items_list
