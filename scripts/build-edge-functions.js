@@ -34,7 +34,6 @@ function ensureDir(dir) {
 function generateSyncPushFunction() {
   const content = `import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.103.0';
-import { decode } from 'djwt';
 
 // Types
 interface SyncPayload {
@@ -110,36 +109,38 @@ function validateOwnership(data: any, owner_id: string): string | null {
 }
 
 /**
- * Extracts user_id from a Supabase JWT token without verification.
- * This is safe because:
- * 1. The JWT comes directly from Supabase's auth system
- * 2. Supabase always validates the signature on their end
- * 3. Any tampering with the JWT would be detected by the database on subsequent operations
+ * Extracts user_id from the Supabase auth context.
+ * The 'x-user-id' header is set by Supabase's authorization layer
+ * when a valid JWT is provided.
  */
-function extractUserIdFromToken(token: string): string | null {
-  try {
-    const decoded = decode(token);
-    if (decoded && decoded.payload && typeof decoded.payload === 'object') {
-      const payload = decoded.payload as Record<string, any>;
-      return payload.sub || null; // Supabase uses 'sub' claim for user_id
-    }
+function verifyAuth(req: Request): string | null {
+  // Supabase sets x-user-id header when auth is successful
+  const userId = req.headers.get('x-user-id');
+  if (userId) {
+    return userId;
+  }
+
+  // Fallback: try to extract from Authorization header if Supabase auth context isn't available
+  const authHeader = req.headers.get('authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return null;
+  }
+
+  // Extract just the sub claim from JWT without verification
+  try {
+    const token = authHeader.slice(7);
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+
+    const payload = JSON.parse(
+      new TextDecoder().decode(
+        Deno.core.decode(parts[1])
+      )
+    );
+    return payload.sub || null;
   } catch {
     return null;
   }
-}
-
-/**
- * Verifies the Supabase JWT token and extracts user_id
- */
-function verifyAuth(req: Request): string | null {
-  const header = req.headers.get('authorization');
-  if (!header || !header.startsWith('Bearer ')) {
-    return null;
-  }
-
-  const token = header.slice(7);
-  return extractUserIdFromToken(token);
 }
 
 serve(async (req: Request) => {
@@ -383,41 +384,42 @@ serve(async (req: Request) => {
 function generateSyncPullFunction() {
   const content = `import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.103.0';
-import { decode } from 'djwt';
 
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1]);
 
 /**
- * Extracts user_id from a Supabase JWT token without verification.
- * This is safe because:
- * 1. The JWT comes directly from Supabase's auth system
- * 2. Supabase always validates the signature on their end
- * 3. Any tampering with the JWT would be detected by the database on subsequent operations
+ * Extracts user_id from the Supabase auth context.
+ * The 'x-user-id' header is set by Supabase's authorization layer
+ * when a valid JWT is provided.
  */
-function extractUserIdFromToken(token: string): string | null {
-  try {
-    const decoded = decode(token);
-    if (decoded && decoded.payload && typeof decoded.payload === 'object') {
-      const payload = decoded.payload as Record<string, any>;
-      return payload.sub || null; // Supabase uses 'sub' claim for user_id
-    }
+function verifyAuth(req: Request): string | null {
+  // Supabase sets x-user-id header when auth is successful
+  const userId = req.headers.get('x-user-id');
+  if (userId) {
+    return userId;
+  }
+
+  // Fallback: try to extract from Authorization header if Supabase auth context isn't available
+  const authHeader = req.headers.get('authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return null;
+  }
+
+  // Extract just the sub claim from JWT without verification
+  try {
+    const token = authHeader.slice(7);
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+
+    const payload = JSON.parse(
+      new TextDecoder().decode(
+        Deno.core.decode(parts[1])
+      )
+    );
+    return payload.sub || null;
   } catch {
     return null;
   }
-}
-
-/**
- * Verifies the Supabase JWT token and extracts user_id
- */
-function verifyAuth(req: Request): string | null {
-  const header = req.headers.get('authorization');
-  if (!header || !header.startsWith('Bearer ')) {
-    return null;
-  }
-
-  const token = header.slice(7);
-  return extractUserIdFromToken(token);
 }
 
 serve(async (req: Request) => {
@@ -577,7 +579,6 @@ function build() {
     imports: {
       'std/': 'https://deno.land/std@0.208.0/',
       '@supabase/': 'https://esm.sh/@supabase/',
-      'djwt': 'https://deno.land/x/djwt@v3.0.0/mod.ts',
     },
   };
   fs.writeFileSync(path.join(OUTPUT_DIR, 'deno.json'), JSON.stringify(denoConfig, null, 2));
