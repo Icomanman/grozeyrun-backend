@@ -10,3 +10,6 @@ skills-lock.json
 
 /tmp
 *.tmp.*
+
+# Generated Edge Functions (created by npm run build:edge)
+/supabase/functions
