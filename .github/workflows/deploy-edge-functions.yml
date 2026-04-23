@@ -49,16 +49,12 @@ jobs:
 
       - name: Deploy Edge Functions to Supabase
         run: |
-          supabase functions deploy sync-push \
-            --project-id ${{ secrets.SUPABASE_PROJECT_ID }} \
-            --no-verify
-          supabase functions deploy sync-pull \
-            --project-id ${{ secrets.SUPABASE_PROJECT_ID }} \
-            --no-verify
+          supabase functions deploy sync-push --no-verify
+          supabase functions deploy sync-pull --no-verify
 
       - name: Verify deployment
         run: |
-          supabase functions list --project-id ${{ secrets.SUPABASE_PROJECT_ID }}
+          supabase functions list
 
       - name: Create deployment comment
         if: github.event_name == 'push'
