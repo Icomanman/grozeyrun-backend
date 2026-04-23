@@ -1,25 +1,26 @@
+'use strict';
+
+const env = require('dotenv');
+env.config({ path: './.env' });
 
 const express = require('express');
-const env = require('dotenv');
 const services = require('./services.cjs');
 
+// Maximum accepted request body size — rejects oversized sync payloads (R3 fix)
+const MAX_PAYLOAD_SIZE = '1mb';
 
 (function main() {
-    env.config({ path: './.env' });
     const app = express();
-    const PORT = 8080 || process.env.PORT;
+    const PORT = process.env.PORT || 8080;
     const url = `http://localhost:${PORT}`;
 
-    global.HOST = 'localhost:' + PORT;
-    global.SERVER = app.listen(PORT, () => {
-        console.log(`> Server on ${url}`);
-    });
+    // Body parser with hard payload size cap applied globally
+    app.use(express.json({ limit: MAX_PAYLOAD_SIZE }));
+    app.use(express.urlencoded({ extended: true, limit: MAX_PAYLOAD_SIZE }));
 
-    app.use(express.json());
+    app.all('/', (_req, res) => res.status(301).redirect('/api'));
+    app.use('/api', services());
+    app.use(/.*/, (_req, res) => res.status(404).json({ success: false, message: 'Not found.' }));
 
-    app.all('/', (req, res) => {
-        res.status(301).redirect('/api');
-    });
-    app.use(/.api/, services()); // services would handle the /api.
-    app.use(/.*/, (req, res) => { res.status(400).end('Bad server request.') });
+    global.SERVER = app.listen(PORT, () => console.log(`> Server on ${url}`));
 }());
