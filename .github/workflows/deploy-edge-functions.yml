@@ -49,8 +49,8 @@ jobs:
 
       - name: Deploy Edge Functions to Supabase
         run: |
-          supabase functions deploy sync-push --no-verify
-          supabase functions deploy sync-pull --no-verify
+          supabase functions deploy sync-push
+          supabase functions deploy sync-pull
 
       - name: Verify deployment
         run: |
