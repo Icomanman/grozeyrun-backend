@@ -1,24 +1,11 @@
 #!/usr/bin/env node
 'use strict';
 
-/**
- * Build script: Convert Express backend to Supabase Edge Functions
- *
- * This script transforms the Node.js Express backend into Deno-compatible
- * TypeScript Edge Functions. Each route becomes a standalone function file.
- *
- * Run: npm run build:edge
- * Output: supabase/functions/
- */
-
 const fs = require('fs');
 const path = require('path');
 
 const SUPABASE_FUNCTIONS_DIR = path.join(__dirname, '..', 'supabase', 'functions');
 
-/**
- * Ensure output directory exists
- */
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -26,11 +13,8 @@ function ensureDir(dir) {
   }
 }
 
-/**
- * Generate the sync-push Edge Function
- */
 function generateSyncPushFunction() {
-  return `import { postgres } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
+  return `import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -49,6 +33,7 @@ function decodeJWT(token) {
     const payload = JSON.parse(atob(parts[1]));
     return payload;
   } catch (e) {
+    console.error("JWT decode error:", e);
     return null;
   }
 }
@@ -112,7 +97,7 @@ function validateOwnership(data, owner_id) {
 // Edge Function: POST /api/sync (full-state push)
 // ─────────────────────────────────────────────────────────────────────
 
-Deno.serve(async (req) => {
+serve(async (req) => {
   // Handle CORS
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -131,15 +116,16 @@ Deno.serve(async (req) => {
     const token = authHeader.replace("Bearer ", "");
 
     // 2. Decode JWT (DO NOT call supabase.auth.getUser - it times out)
-    const payload = decodeJWT(token);
-    if (!payload || !payload.sub) {
+    const tokenPayload = decodeJWT(token);
+    if (!tokenPayload || !tokenPayload.sub) {
       return new Response(
         JSON.stringify({ success: false, message: "Invalid token." }),
         { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
-    const owner_id = payload.sub;
+    const owner_id = tokenPayload.sub;
+
     // 3. Parse request body
     const body = await req.json();
     const { schema_version, data } = body;
@@ -167,22 +153,32 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { items_storage, lists_storage, runs_storage, users_storage, app_settings, list_shares_storage } = data;
-    const flatItems = Object.values(items_storage ?? {}).flat();
+    // 4. Get DATABASE_URL
+    const dbUrl = Deno.env.get("DATABASE_URL");
+    if (!dbUrl) {
+      console.error("DATABASE_URL not set");
+      return new Response(
+        JSON.stringify({ success: false, message: "Database connection not configured." }),
+        { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
+      );
+    }
 
-    // Connect to Postgres via Supabase
-    const pool = new postgres.Pool(Deno.env.get("DATABASE_URL") || "", {
-      max: 5,
-    });
+    // 5. Dynamic import of postgres (to avoid BOOT_ERROR)
+    const { Client } = await import("https://deno.land/x/postgres@v0.17.0/mod.ts");
 
-    const connection = await pool.connect();
+    const client = new Client(dbUrl);
+    await client.connect();
 
     try {
-      await connection.queryArray("BEGIN");
+      // Transaction begin
+      await client.queryArray("BEGIN");
+
+      const { items_storage, lists_storage, runs_storage, users_storage, app_settings, list_shares_storage } = data;
+      const flatItems = Object.values(items_storage ?? {}).flat();
 
       // ── 1. Upsert user profile ──────────────────────────────────────────
       if (users_storage) {
-        await connection.queryArray(
+        await client.queryArray(
           \`INSERT INTO public.users (id, email, first_name, last_name, created_at, updated_at)
            VALUES ($1, $2, $3, $4, $5, $6)
            ON CONFLICT (id) DO UPDATE SET
@@ -203,7 +199,7 @@ Deno.serve(async (req) => {
 
       // ── 2. Upsert app settings ──────────────────────────────────────────
       if (app_settings) {
-        await connection.queryArray(
+        await client.queryArray(
           \`INSERT INTO public.app_settings (user_id, budget, currency, max_hours, notifications, period, theme, updated_at)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            ON CONFLICT (user_id) DO UPDATE SET
@@ -228,12 +224,12 @@ Deno.serve(async (req) => {
       }
 
       // ── 3. Delete existing lists (cascades to items, runs, list_shares) ──
-      await connection.queryArray("DELETE FROM public.lists WHERE owner_id = $1", [owner_id]);
+      await client.queryArray("DELETE FROM public.lists WHERE owner_id = $1", [owner_id]);
 
       // ── 4. Insert lists ─────────────────────────────────────────────────
       if (Array.isArray(lists_storage)) {
         for (const list of lists_storage) {
-          await connection.queryArray(
+          await client.queryArray(
             \`INSERT INTO public.lists (id, owner_id, name, color, emoji, created_at, updated_at, deleted_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\`,
             [
@@ -253,7 +249,7 @@ Deno.serve(async (req) => {
       // ── 5. Insert items ────────────────────────────────────────────────
       if (flatItems.length > 0) {
         for (const item of flatItems) {
-          await connection.queryArray(
+          await client.queryArray(
             \`INSERT INTO public.items (id, list_id, name, status, created_at, updated_at, deleted_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7)\`,
             [
@@ -272,7 +268,7 @@ Deno.serve(async (req) => {
       // ── 6. Insert runs ─────────────────────────────────────────────────
       if (Array.isArray(runs_storage)) {
         for (const run of runs_storage) {
-          await connection.queryArray(
+          await client.queryArray(
             \`INSERT INTO public.runs (id, item_id, started_at, ended_at, duration, created_at, updated_at, deleted_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\`,
             [
@@ -292,7 +288,7 @@ Deno.serve(async (req) => {
       // ── 7. Insert list shares ──────────────────────────────────────────
       if (Array.isArray(list_shares_storage)) {
         for (const share of list_shares_storage) {
-          await connection.queryArray(
+          await client.queryArray(
             \`INSERT INTO public.list_shares (id, list_id, shared_with_user_id, permission, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6)\`,
             [
@@ -309,24 +305,24 @@ Deno.serve(async (req) => {
 
       // ── 8. Record sync log ─────────────────────────────────────────────
       const payloadSize = JSON.stringify(body).length;
-      await connection.queryArray(
+      await client.queryArray(
         \`INSERT INTO public.sync_logs (user_id, operation, payload_size, success, created_at)
          VALUES ($1, $2, $3, $4, $5)\`,
         [owner_id, "push", payloadSize, true, new Date().toISOString()]
       );
 
-      await connection.queryArray("COMMIT");
+      await client.queryArray("COMMIT");
 
       return new Response(
         JSON.stringify({ success: true, message: "Sync completed." }),
         { status: 200, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     } catch (err) {
-      await connection.queryArray("ROLLBACK").catch(() => {});
-      console.error("Transaction error:", err.message);
+      await client.queryArray("ROLLBACK").catch(() => {});
+      console.error("Transaction error:", err);
       throw err;
     } finally {
-      connection.release();
+      await client.end();
     }
   } catch (error) {
     console.error("sync-push error:", error);
@@ -339,11 +335,8 @@ Deno.serve(async (req) => {
 `;
 }
 
-/**
- * Generate the sync-pull Edge Function
- */
 function generateSyncPullFunction() {
-  return `import { postgres } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
+  return `import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -362,6 +355,7 @@ function decodeJWT(token) {
     const payload = JSON.parse(atob(parts[1]));
     return payload;
   } catch (e) {
+    console.error("JWT decode error:", e);
     return null;
   }
 }
@@ -370,7 +364,7 @@ function decodeJWT(token) {
 // Edge Function: GET /api/sync (full-state pull)
 // ─────────────────────────────────────────────────────────────────────
 
-Deno.serve(async (req) => {
+serve(async (req) => {
   // Handle CORS
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -389,48 +383,58 @@ Deno.serve(async (req) => {
     const token = authHeader.replace("Bearer ", "");
 
     // 2. Decode JWT (DO NOT call supabase.auth.getUser - it times out)
-    const payload = decodeJWT(token);
-    if (!payload || !payload.sub) {
+    const tokenPayload = decodeJWT(token);
+    if (!tokenPayload || !tokenPayload.sub) {
       return new Response(
         JSON.stringify({ success: false, message: "Invalid token." }),
         { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
-    const owner_id = payload.sub;
-    // 3. Connect to Postgres via Supabase
-    const pool = new postgres.Pool(Deno.env.get("DATABASE_URL") || "", {
-      max: 5,
-    });
+    const owner_id = tokenPayload.sub;
 
-    const connection = await pool.connect();
+    // 3. Get DATABASE_URL
+    const dbUrl = Deno.env.get("DATABASE_URL");
+    if (!dbUrl) {
+      console.error("DATABASE_URL not set");
+      return new Response(
+        JSON.stringify({ success: false, message: "Database connection not configured." }),
+        { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
+      );
+    }
+
+    // 4. Dynamic import of postgres (to avoid BOOT_ERROR)
+    const { Client } = await import("https://deno.land/x/postgres@v0.17.0/mod.ts");
+
+    const client = new Client(dbUrl);
+    await client.connect();
 
     try {
       // Fetch all data owned by this user
 
       // Users
-      const usersResult = await connection.queryArray(
+      const usersResult = await client.queryArray(
         "SELECT id, email, first_name, last_name, created_at, updated_at FROM public.users WHERE id = $1",
         [owner_id]
       );
-      const user_record = usersResult.rows[0] || null;
+      const user_record = usersResult.rows?.[0] || null;
 
       // App settings
-      const settingsResult = await connection.queryArray(
+      const settingsResult = await client.queryArray(
         "SELECT * FROM public.app_settings WHERE user_id = $1",
         [owner_id]
       );
-      const app_settings = settingsResult.rows[0] || null;
+      const app_settings = settingsResult.rows?.[0] || null;
 
       // Lists
-      const listsResult = await connection.queryArray(
+      const listsResult = await client.queryArray(
         "SELECT * FROM public.lists WHERE owner_id = $1",
         [owner_id]
       );
       const lists_storage = listsResult.rows || [];
 
       // Items grouped by list_id
-      const itemsResult = await connection.queryArray(
+      const itemsResult = await client.queryArray(
         "SELECT * FROM public.items WHERE list_id IN (SELECT id FROM public.lists WHERE owner_id = $1)",
         [owner_id]
       );
@@ -443,21 +447,21 @@ Deno.serve(async (req) => {
       }
 
       // Runs
-      const runsResult = await connection.queryArray(
+      const runsResult = await client.queryArray(
         "SELECT r.* FROM public.runs r JOIN public.items i ON r.item_id = i.id WHERE i.list_id IN (SELECT id FROM public.lists WHERE owner_id = $1)",
         [owner_id]
       );
       const runs_storage = runsResult.rows || [];
 
       // List shares
-      const sharesResult = await connection.queryArray(
+      const sharesResult = await client.queryArray(
         "SELECT * FROM public.list_shares WHERE list_id IN (SELECT id FROM public.lists WHERE owner_id = $1)",
         [owner_id]
       );
       const list_shares_storage = sharesResult.rows || [];
 
       // Build response
-      const payload = {
+      const responsePayload = {
         schema_version: 1,
         data: {
           users_storage: user_record,
@@ -470,17 +474,17 @@ Deno.serve(async (req) => {
       };
 
       // Record sync log
-      await connection.queryArray(
+      await client.queryArray(
         "INSERT INTO public.sync_logs (user_id, operation, payload_size, success, created_at) VALUES ($1, $2, $3, $4, $5)",
-        [owner_id, "pull", JSON.stringify(payload).length, true, new Date().toISOString()]
+        [owner_id, "pull", JSON.stringify(responsePayload).length, true, new Date().toISOString()]
       );
 
-      return new Response(JSON.stringify(payload), {
+      return new Response(JSON.stringify(responsePayload), {
         status: 200,
         headers: { "Content-Type": "application/json", ...corsHeaders },
       });
     } finally {
-      connection.release();
+      await client.end();
     }
   } catch (error) {
     console.error("sync-pull error:", error);
@@ -493,9 +497,6 @@ Deno.serve(async (req) => {
 `;
 }
 
-/**
- * Main build process
- */
 function build() {
   console.log("\n🔨 Building Edge Functions...\n");
 
@@ -525,5 +526,4 @@ function build() {
   }
 }
 
-// Run the build
 build();
