@@ -15,6 +15,7 @@ function ensureDir(dir) {
 
 function generateSyncPushFunction() {
   return `import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -36,6 +37,30 @@ function decodeJWT(token) {
     console.error("JWT decode error:", e);
     return null;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Helper: Create Supabase client with auth context
+// ─────────────────────────────────────────────────────────────────────
+
+function createSupabaseClient(token) {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
+  
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_ANON_KEY");
+  }
+
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+    },
+    global: {
+      headers: {
+        Authorization: \`Bearer \${token}\`,
+      },
+    },
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -153,181 +178,140 @@ serve(async (req) => {
       );
     }
 
-    // 4. Get DATABASE_URL
-    const dbUrl = Deno.env.get("DATABASE_URL");
-    if (!dbUrl) {
-      console.error("DATABASE_URL not set");
-      return new Response(
-        JSON.stringify({ success: false, message: "Database connection not configured." }),
-        { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
-      );
-    }
-
-    // 5. Dynamic import of postgres (to avoid BOOT_ERROR)
-    const { Client } = await import("https://deno.land/x/postgres@v0.17.0/mod.ts");
-
-    const client = new Client(dbUrl);
-    await client.connect();
+    // 4. Initialize Supabase client
+    console.log("[sync-push] Initializing Supabase client...");
+    const supabase = createSupabaseClient(token);
 
     try {
-      // Transaction begin
-      await client.queryArray("BEGIN");
-
       const { items_storage, lists_storage, runs_storage, users_storage, app_settings, list_shares_storage } = data;
       const flatItems = Object.values(items_storage ?? {}).flat();
 
       // ── 1. Upsert user profile ──────────────────────────────────────────
+      console.log("[sync-push] Upserting user profile...");
       if (users_storage) {
-        await client.queryArray(
-          \`INSERT INTO public.users (id, email, first_name, last_name, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           ON CONFLICT (id) DO UPDATE SET
-               email      = EXCLUDED.email,
-               first_name = EXCLUDED.first_name,
-               last_name  = EXCLUDED.last_name,
-               updated_at = EXCLUDED.updated_at\`,
-          [
-            owner_id,
-            users_storage.email ?? null,
-            users_storage.first_name ?? null,
-            users_storage.last_name ?? null,
-            users_storage.created_at ?? new Date().toISOString(),
-            users_storage.updated_at ?? new Date().toISOString(),
-          ]
-        );
+        const { error } = await supabase.from("users").upsert({
+          id: owner_id,
+          email: users_storage.email ?? null,
+          first_name: users_storage.first_name ?? null,
+          last_name: users_storage.last_name ?? null,
+          created_at: users_storage.created_at ?? new Date().toISOString(),
+          updated_at: users_storage.updated_at ?? new Date().toISOString(),
+        });
+        if (error) throw new Error(\`User upsert failed: \${error.message}\`);
       }
 
       // ── 2. Upsert app settings ──────────────────────────────────────────
+      console.log("[sync-push] Upserting app settings...");
       if (app_settings) {
-        await client.queryArray(
-          \`INSERT INTO public.app_settings (user_id, budget, currency, max_hours, notifications, period, theme, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           ON CONFLICT (user_id) DO UPDATE SET
-               budget        = EXCLUDED.budget,
-               currency      = EXCLUDED.currency,
-               max_hours     = EXCLUDED.max_hours,
-               notifications = EXCLUDED.notifications,
-               period        = EXCLUDED.period,
-               theme         = EXCLUDED.theme,
-               updated_at    = EXCLUDED.updated_at\`,
-          [
-            owner_id,
-            app_settings.budget ?? null,
-            app_settings.currency ?? null,
-            app_settings.max_hours ?? null,
-            app_settings.notifications ?? true,
-            app_settings.period ?? "monthly",
-            app_settings.theme ?? "light",
-            app_settings.updated_at ?? new Date().toISOString(),
-          ]
-        );
+        const { error } = await supabase.from("app_settings").upsert({
+          user_id: owner_id,
+          budget: app_settings.budget ?? null,
+          currency: app_settings.currency ?? null,
+          max_hours: app_settings.max_hours ?? null,
+          notifications: app_settings.notifications ?? true,
+          period: app_settings.period ?? "monthly",
+          theme: app_settings.theme ?? "light",
+          updated_at: app_settings.updated_at ?? new Date().toISOString(),
+        });
+        if (error) throw new Error(\`Settings upsert failed: \${error.message}\`);
       }
 
       // ── 3. Delete existing lists (cascades to items, runs, list_shares) ──
-      await client.queryArray("DELETE FROM public.lists WHERE owner_id = $1", [owner_id]);
+      console.log("[sync-push] Clearing old lists...");
+      const { error: deleteError } = await supabase.from("lists").delete().eq("owner_id", owner_id);
+      if (deleteError) throw new Error(\`List delete failed: \${deleteError.message}\`);
 
       // ── 4. Insert lists ─────────────────────────────────────────────────
-      if (Array.isArray(lists_storage)) {
-        for (const list of lists_storage) {
-          await client.queryArray(
-            \`INSERT INTO public.lists (id, owner_id, name, color, emoji, created_at, updated_at, deleted_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\`,
-            [
-              list.id,
-              owner_id,
-              list.name,
-              list.color ?? null,
-              list.emoji ?? null,
-              list.created_at ?? new Date().toISOString(),
-              list.updated_at ?? new Date().toISOString(),
-              list.deleted_at ?? null,
-            ]
-          );
-        }
+      console.log("[sync-push] Inserting\", lists_storage.length, \"lists...\");
+      if (Array.isArray(lists_storage) && lists_storage.length > 0) {
+        const listsToInsert = lists_storage.map(list => ({
+          id: list.id,
+          owner_id: owner_id,
+          name: list.name,
+          color: list.color ?? null,
+          emoji: list.emoji ?? null,
+          created_at: list.created_at ?? new Date().toISOString(),
+          updated_at: list.updated_at ?? new Date().toISOString(),
+          deleted_at: list.deleted_at ?? null,
+        }));
+        const { error } = await supabase.from("lists").insert(listsToInsert);
+        if (error) throw new Error(\`Lists insert failed: \${error.message}\`);
       }
 
       // ── 5. Insert items ────────────────────────────────────────────────
+      console.log("[sync-push] Inserting\", flatItems.length, \"items...\");
       if (flatItems.length > 0) {
-        for (const item of flatItems) {
-          await client.queryArray(
-            \`INSERT INTO public.items (id, list_id, name, status, created_at, updated_at, deleted_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)\`,
-            [
-              item.id,
-              item.list_id,
-              item.name,
-              item.status ?? "pending",
-              item.created_at ?? new Date().toISOString(),
-              item.updated_at ?? new Date().toISOString(),
-              item.deleted_at ?? null,
-            ]
-          );
-        }
+        const itemsToInsert = flatItems.map(item => ({
+          id: item.id,
+          list_id: item.list_id,
+          name: item.name,
+          status: item.status ?? "pending",
+          created_at: item.created_at ?? new Date().toISOString(),
+          updated_at: item.updated_at ?? new Date().toISOString(),
+          deleted_at: item.deleted_at ?? null,
+        }));
+        const { error } = await supabase.from("items").insert(itemsToInsert);
+        if (error) throw new Error(\`Items insert failed: \${error.message}\`);
       }
 
       // ── 6. Insert runs ─────────────────────────────────────────────────
-      if (Array.isArray(runs_storage)) {
-        for (const run of runs_storage) {
-          await client.queryArray(
-            \`INSERT INTO public.runs (id, item_id, started_at, ended_at, duration, created_at, updated_at, deleted_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\`,
-            [
-              run.id,
-              run.item_id,
-              run.started_at ?? null,
-              run.ended_at ?? null,
-              run.duration ?? null,
-              run.created_at ?? new Date().toISOString(),
-              run.updated_at ?? new Date().toISOString(),
-              run.deleted_at ?? null,
-            ]
-          );
-        }
+      console.log("[sync-push] Inserting\", runs_storage.length, \"runs...\");
+      if (Array.isArray(runs_storage) && runs_storage.length > 0) {
+        const runsToInsert = runs_storage.map(run => ({
+          id: run.id,
+          item_id: run.item_id,
+          started_at: run.started_at ?? null,
+          ended_at: run.ended_at ?? null,
+          duration: run.duration ?? null,
+          created_at: run.created_at ?? new Date().toISOString(),
+          updated_at: run.updated_at ?? new Date().toISOString(),
+          deleted_at: run.deleted_at ?? null,
+        }));
+        const { error } = await supabase.from("runs").insert(runsToInsert);
+        if (error) throw new Error(\`Runs insert failed: \${error.message}\`);
       }
 
       // ── 7. Insert list shares ──────────────────────────────────────────
-      if (Array.isArray(list_shares_storage)) {
-        for (const share of list_shares_storage) {
-          await client.queryArray(
-            \`INSERT INTO public.list_shares (id, list_id, shared_with_user_id, permission, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6)\`,
-            [
-              share.id,
-              share.list_id,
-              share.shared_with_user_id,
-              share.permission ?? "viewer",
-              share.created_at ?? new Date().toISOString(),
-              share.updated_at ?? new Date().toISOString(),
-            ]
-          );
-        }
+      console.log("[sync-push] Inserting\", list_shares_storage?.length ?? 0, \"shares...\");
+      if (Array.isArray(list_shares_storage) && list_shares_storage.length > 0) {
+        const sharesToInsert = list_shares_storage.map(share => ({
+          id: share.id,
+          list_id: share.list_id,
+          shared_with_user_id: share.shared_with_user_id,
+          permission: share.permission ?? "viewer",
+          created_at: share.created_at ?? new Date().toISOString(),
+          updated_at: share.updated_at ?? new Date().toISOString(),
+        }));
+        const { error } = await supabase.from("list_shares").insert(sharesToInsert);
+        if (error) throw new Error(\`List shares insert failed: \${error.message}\`);
       }
 
       // ── 8. Record sync log ─────────────────────────────────────────────
+      console.log("[sync-push] Recording sync log...");
       const payloadSize = JSON.stringify(body).length;
-      await client.queryArray(
-        \`INSERT INTO public.sync_logs (user_id, operation, payload_size, success, created_at)
-         VALUES ($1, $2, $3, $4, $5)\`,
-        [owner_id, "push", payloadSize, true, new Date().toISOString()]
-      );
+      const { error: logError } = await supabase.from("sync_logs").insert({
+        user_id: owner_id,
+        operation: "push",
+        payload_size: payloadSize,
+        success: true,
+        created_at: new Date().toISOString(),
+      });
+      if (logError) throw new Error(\`Sync log failed: \${logError.message}\`);
 
-      await client.queryArray("COMMIT");
-
+      console.log("[sync-push] Sync push completed successfully");
       return new Response(
         JSON.stringify({ success: true, message: "Sync completed." }),
         { status: 200, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     } catch (err) {
-      await client.queryArray("ROLLBACK").catch(() => {});
-      console.error("Transaction error:", err);
+      console.error("[sync-push] Error:", err);
       throw err;
-    } finally {
-      await client.end();
     }
   } catch (error) {
     console.error("sync-push error:", error);
+    const errorMsg = error instanceof Error ? error.message : String(error);
     return new Response(
-      JSON.stringify({ success: false, message: "Sync failed." }),
+      JSON.stringify({ success: false, message: "Sync failed.", error: errorMsg }),
       { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
     );
   }
@@ -337,6 +321,7 @@ serve(async (req) => {
 
 function generateSyncPullFunction() {
   return `import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -358,6 +343,30 @@ function decodeJWT(token) {
     console.error("JWT decode error:", e);
     return null;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Helper: Create Supabase client with auth context
+// ─────────────────────────────────────────────────────────────────────
+
+function createSupabaseClient(token) {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
+  
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_ANON_KEY");
+  }
+
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+    },
+    global: {
+      headers: {
+        Authorization: \`Bearer \${token}\`,
+      },
+    },
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -393,74 +402,83 @@ serve(async (req) => {
 
     const owner_id = tokenPayload.sub;
 
-    // 3. Get DATABASE_URL
-    const dbUrl = Deno.env.get("DATABASE_URL");
-    if (!dbUrl) {
-      console.error("DATABASE_URL not set");
-      return new Response(
-        JSON.stringify({ success: false, message: "Database connection not configured." }),
-        { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
-      );
-    }
-
-    // 4. Dynamic import of postgres (to avoid BOOT_ERROR)
-    const { Client } = await import("https://deno.land/x/postgres@v0.17.0/mod.ts");
-
-    const client = new Client(dbUrl);
-    await client.connect();
+    // 3. Initialize Supabase client with user context
+    console.log("[sync-pull] Auth OK, owner_id:", owner_id);
+    console.log("[sync-pull] Initializing Supabase client...");
+    const supabase = createSupabaseClient(token);
 
     try {
       // Fetch all data owned by this user
 
       // Users
-      const usersResult = await client.queryArray(
-        "SELECT id, email, first_name, last_name, created_at, updated_at FROM public.users WHERE id = $1",
-        [owner_id]
-      );
-      const user_record = usersResult.rows?.[0] || null;
+      console.log("[sync-pull] Fetching users...");
+      const { data: usersData, error: usersError } = await supabase
+        .from("users")
+        .select("id, email, first_name, last_name, created_at, updated_at")
+        .eq("id", owner_id)
+        .maybeSingle();
+      if (usersError && usersError.code !== "PGRST116") throw usersError;
+      const user_record = usersData || null;
 
       // App settings
-      const settingsResult = await client.queryArray(
-        "SELECT * FROM public.app_settings WHERE user_id = $1",
-        [owner_id]
-      );
-      const app_settings = settingsResult.rows?.[0] || null;
+      console.log("[sync-pull] Fetching app_settings...");
+      const { data: settingsData, error: settingsError } = await supabase
+        .from("app_settings")
+        .select("*")
+        .eq("user_id", owner_id)
+        .maybeSingle();
+      if (settingsError && settingsError.code !== "PGRST116") throw settingsError;
+      const app_settings = settingsData || null;
 
       // Lists
-      const listsResult = await client.queryArray(
-        "SELECT * FROM public.lists WHERE owner_id = $1",
-        [owner_id]
-      );
-      const lists_storage = listsResult.rows || [];
+      console.log("[sync-pull] Fetching lists...");
+      const { data: listsData, error: listsError } = await supabase
+        .from("lists")
+        .select("*")
+        .eq("owner_id", owner_id);
+      if (listsError) throw listsError;
+      const lists_storage = listsData || [];
+      console.log("[sync-pull] Found", lists_storage.length, "lists");
 
       // Items grouped by list_id
-      const itemsResult = await client.queryArray(
-        "SELECT * FROM public.items WHERE list_id IN (SELECT id FROM public.lists WHERE owner_id = $1)",
-        [owner_id]
-      );
+      console.log("[sync-pull] Fetching items...");
+      const { data: itemsData, error: itemsError } = await supabase
+        .from("items")
+        .select("*")
+        .in("list_id", lists_storage.map(l => l.id));
+      if (itemsError) throw itemsError;
+      
       const items_storage = {};
-      for (const item of itemsResult.rows || []) {
+      for (const item of itemsData || []) {
         if (!items_storage[item.list_id]) {
           items_storage[item.list_id] = [];
         }
         items_storage[item.list_id].push(item);
       }
+      console.log("[sync-pull] Found items in", Object.keys(items_storage).length, "lists");
 
       // Runs
-      const runsResult = await client.queryArray(
-        "SELECT r.* FROM public.runs r JOIN public.items i ON r.item_id = i.id WHERE i.list_id IN (SELECT id FROM public.lists WHERE owner_id = $1)",
-        [owner_id]
-      );
-      const runs_storage = runsResult.rows || [];
+      console.log("[sync-pull] Fetching runs...");
+      const { data: runsData, error: runsError } = await supabase
+        .from("runs")
+        .select("*")
+        .in("item_id", (itemsData || []).map(i => i.id));
+      if (runsError) throw runsError;
+      const runs_storage = runsData || [];
+      console.log("[sync-pull] Found", runs_storage.length, "runs");
 
       // List shares
-      const sharesResult = await client.queryArray(
-        "SELECT * FROM public.list_shares WHERE list_id IN (SELECT id FROM public.lists WHERE owner_id = $1)",
-        [owner_id]
-      );
-      const list_shares_storage = sharesResult.rows || [];
+      console.log("[sync-pull] Fetching list_shares...");
+      const { data: sharesData, error: sharesError } = await supabase
+        .from("list_shares")
+        .select("*")
+        .in("list_id", lists_storage.map(l => l.id));
+      if (sharesError) throw sharesError;
+      const list_shares_storage = sharesData || [];
+      console.log("[sync-pull] Found", list_shares_storage.length, "shares");
 
       // Build response
+      console.log("[sync-pull] Building response...");
       const responsePayload = {
         schema_version: 1,
         data: {
@@ -474,22 +492,30 @@ serve(async (req) => {
       };
 
       // Record sync log
-      await client.queryArray(
-        "INSERT INTO public.sync_logs (user_id, operation, payload_size, success, created_at) VALUES ($1, $2, $3, $4, $5)",
-        [owner_id, "pull", JSON.stringify(responsePayload).length, true, new Date().toISOString()]
-      );
+      console.log("[sync-pull] Recording sync log...");
+      const { error: logError } = await supabase.from("sync_logs").insert({
+        user_id: owner_id,
+        operation: "pull",
+        payload_size: JSON.stringify(responsePayload).length,
+        success: true,
+        created_at: new Date().toISOString(),
+      });
+      if (logError) throw logError;
 
+      console.log("[sync-pull] Response ready, sending...");
       return new Response(JSON.stringify(responsePayload), {
         status: 200,
         headers: { "Content-Type": "application/json", ...corsHeaders },
       });
-    } finally {
-      await client.end();
+    } catch (error) {
+      console.error("[sync-pull] Query error:", error);
+      throw error;
     }
   } catch (error) {
-    console.error("sync-pull error:", error);
+    console.error("[sync-pull] error:", error);
+    const errorMsg = error instanceof Error ? error.message : String(error);
     return new Response(
-      JSON.stringify({ success: false, message: "Sync pull failed." }),
+      JSON.stringify({ success: false, message: "Sync pull failed.", error: errorMsg }),
       { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
     );
   }
