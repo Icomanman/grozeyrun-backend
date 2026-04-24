@@ -2,21 +2,19 @@
 'use strict';
 
 /**
- * Build script: Converts Node.js Express backend to Supabase Edge Functions
- * 
- * This script:
- * 1. Reads the CommonJS backend code
- * 2. Generates TypeScript Edge Functions compatible with Deno
- * 3. Outputs to supabase/functions/ directory
- * 
- * Run with: npm run build:edge
+ * Build script: Convert Express backend to Supabase Edge Functions
+ *
+ * This script transforms the Node.js Express backend into Deno-compatible
+ * TypeScript Edge Functions. Each route becomes a standalone function file.
+ *
+ * Run: npm run build:edge
+ * Output: supabase/functions/
  */
 
 const fs = require('fs');
 const path = require('path');
 
-const OUTPUT_DIR = path.join(__dirname, '../supabase/functions');
-const BACKEND_DIR = path.join(__dirname, '..');
+const SUPABASE_FUNCTIONS_DIR = path.join(__dirname, '..', 'supabase', 'functions');
 
 /**
  * Ensure output directory exists
@@ -29,87 +27,49 @@ function ensureDir(dir) {
 }
 
 /**
- * Read EDGE client options from `auth.cjs` between marker comments.
- * Returns the literal JS object text (without the leading comma).
- */
-// getEdgeClientOptions removed — not used
-
-
-/**
- * Detect which SUPABASE key variable the backend `auth.cjs` uses
- * by inspecting the createClient call. Returns the env var name string.
- */
-function getSupabaseKeyVarFromAuth() {
-  try {
-    const authPath = path.join(BACKEND_DIR, 'auth.cjs');
-    if (!fs.existsSync(authPath)) return 'SUPABASE_ANON_KEY';
-    const txt = fs.readFileSync(authPath, 'utf8');
-    const m2 = txt.match(/createClient\s*\(\s*process\.env\.([A-Z0-9_]+)\s*,\s*process\.env\.([A-Z0-9_]+)/m);
-    if (m2 && m2[2]) return m2[2];
-    return 'SUPABASE_ANON_KEY';
-  } catch (err) {
-    console.warn('Failed to detect supabase key var from auth.cjs:', err.message);
-    return 'SUPABASE_ANON_KEY';
-  }
-}
-
-/**
- * Generate sync-push Edge Function (POST /api/sync)
+ * Generate the sync-push Edge Function
  */
 function generateSyncPushFunction() {
-  let content = `import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.103.0';
+  return `import { createClient } from "https://esm.sh/@supabase/supabase-js@2.103.0";
+import { postgres } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
 
-// Types
-interface SyncPayload {
-  schema_version: number;
-  data: {
-    items_storage: Record<string, any[]>;
-    lists_storage: any[];
-    runs_storage: any[];
-    users_storage: any;
-    app_settings: any;
-    list_shares_storage?: any[];
-  };
-}
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, content-type",
+};
 
-interface RequestBody {
+// ─────────────────────────────────────────────────────────────────────
+// Validation functions (from validations.cjs)
+// ─────────────────────────────────────────────────────────────────────
 
-  schema_version: number;
-  data: any;
-}
-
+const REQUIRED_DATA_KEYS = ["items_storage", "lists_storage", "runs_storage", "users_storage", "app_settings"];
+const OPTIONAL_ARRAY_KEYS = ["list_shares_storage"];
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1]);
 
-/**
- * Validates the top-level structure of the sync data payload.
- */
-function validateSyncPayload(data: any): string | null {
-  const REQUIRED_DATA_KEYS = ['items_storage', 'lists_storage', 'runs_storage', 'users_storage', 'app_settings'];
-  const OPTIONAL_ARRAY_KEYS = ['list_shares_storage'];
-
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    return 'Missing or invalid data payload.';
+function validateSyncPayload(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return "Missing or invalid data payload.";
   }
   for (const key of REQUIRED_DATA_KEYS) {
     if (!(key in data)) {
       return \`Missing required field: data.\${key}.\`;
     }
   }
-  if (typeof data.items_storage !== 'object' || Array.isArray(data.items_storage)) {
-    return 'data.items_storage must be a plain object (Record<listId, ListItem[]>).';
+  if (typeof data.items_storage !== "object" || Array.isArray(data.items_storage)) {
+    return "data.items_storage must be a plain object (Record<listId, ListItem[]>).";
   }
   if (!Array.isArray(data.lists_storage)) {
-    return 'data.lists_storage must be an array.';
+    return "data.lists_storage must be an array.";
   }
   if (!Array.isArray(data.runs_storage)) {
-    return 'data.runs_storage must be an array.';
+    return "data.runs_storage must be an array.";
   }
-  if (typeof data.users_storage !== 'object' || Array.isArray(data.users_storage)) {
-    return 'data.users_storage must be a plain object.';
+  if (typeof data.users_storage !== "object" || Array.isArray(data.users_storage)) {
+    return "data.users_storage must be a plain object.";
   }
-  if (typeof data.app_settings !== 'object' || Array.isArray(data.app_settings)) {
-    return 'data.app_settings must be a plain object.';
+  if (typeof data.app_settings !== "object" || Array.isArray(data.app_settings)) {
+    return "data.app_settings must be a plain object.";
   }
   for (const key of OPTIONAL_ARRAY_KEYS) {
     if (key in data && !Array.isArray(data[key])) {
@@ -119,513 +79,449 @@ function validateSyncPayload(data: any): string | null {
   return null;
 }
 
-/**
- * Validates that the authenticated user owns the data
- */
-function validateOwnership(data: any, owner_id: string): string | null {
-  if (data.users_storage?.id && data.users_storage.id !== owner_id) {
-    return 'User ID mismatch: cannot sync data for another user.';
+function validateOwnership(data, owner_id) {
+  const { users_storage, lists_storage } = data;
+  if (users_storage && users_storage.id && users_storage.id !== owner_id) {
+    return "User ID mismatch.";
   }
-  if (data.lists_storage?.length > 0) {
-    if (data.lists_storage.some((list: any) => list.owner_id !== owner_id)) {
-      return 'Ownership violation: lists must belong to authenticated user.';
+  if (Array.isArray(lists_storage)) {
+    for (const list of lists_storage) {
+      if (list.owner_id && list.owner_id !== owner_id) {
+        return "List ownership mismatch.";
+      }
     }
   }
   return null;
 }
 
-/**
- * Verifies the Supabase JWT token and extracts user_id
- */
-async function verifyAuth(req: Request): Promise<string | null> {
-  const header = req.headers.get('authorization');
-  if (!header || !header.startsWith('Bearer ')) {
-    return null;
-  }
+// ─────────────────────────────────────────────────────────────────────
+// Edge Function: POST /api/sync (full-state push)
+// ─────────────────────────────────────────────────────────────────────
 
-  const token = header.slice(7);
-  const supabase = createClient(
-    Deno.env.get('SUPABASE_URL') || '',
-    Deno.env.get('SUPABASE_ANON_KEY') || '',
-    {
-      global: {
-        headers: {
-          Authorization: \`Bearer \${token}\`,
-        },
-      },
-    }
-  );
-
-  try {
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    if (error || !user) {
-      return null;
-    }
-    return user.id;
-  } catch {
-    return null;
-  }
-}
-
-serve(async (req: Request) => {
-  // Handle CORS preflight
-  if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      },
-    });
-  }
-
-  if (req.method !== 'POST') {
-    return new Response(
-      JSON.stringify({ success: false, message: 'Method not allowed' }),
-      { status: 405, headers: { 'Content-Type': 'application/json' } }
-    );
+Deno.serve(async (req) => {
+  // Handle CORS
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    // Verify auth
-    const owner_id = await verifyAuth(req);
-    if (!owner_id) {
+    // Extract auth token from Authorization header
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return new Response(
-        JSON.stringify({ success: false, message: 'Invalid or missing authorization' }),
-        { status: 401, headers: { 'Content-Type': 'application/json' } }
+        JSON.stringify({ success: false, message: "Missing or invalid Authorization header." }),
+        { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
+    const token = authHeader.slice(7);
+
+    // Verify token with Supabase Auth (using anon key + Bearer token in global headers)
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL") || "",
+      Deno.env.get("SUPABASE_ANON_KEY") || "",
+      {
+        global: {
+          headers: {
+            Authorization: \`Bearer \${token}\`,
+          },
+        },
+      }
+    );
+
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !user) {
+      return new Response(
+        JSON.stringify({ success: false, message: "Invalid or expired token." }),
+        { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders } }
+      );
+    }
+
+    const owner_id = user.id;
+
     // Parse request body
-    const body: RequestBody = await req.json();
+    const body = await req.json();
     const { schema_version, data } = body;
 
-    // Validate schema version
     if (!SUPPORTED_SCHEMA_VERSIONS.has(Number(schema_version))) {
       return new Response(
         JSON.stringify({ success: false, message: \`Unsupported schema_version: \${schema_version}.\` }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
+        { status: 400, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
-    // Validate payload
     const payloadError = validateSyncPayload(data);
     if (payloadError) {
       return new Response(
         JSON.stringify({ success: false, message: payloadError }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
+        { status: 400, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
-    // Validate ownership
     const ownerError = validateOwnership(data, owner_id);
     if (ownerError) {
       return new Response(
         JSON.stringify({ success: false, message: ownerError }),
-        { status: 403, headers: { 'Content-Type': 'application/json' } }
+        { status: 403, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
-    const payloadSize = Buffer.byteLength(JSON.stringify(body), 'utf8');
     const { items_storage, lists_storage, runs_storage, users_storage, app_settings, list_shares_storage } = data;
     const flatItems = Object.values(items_storage ?? {}).flat();
 
-    // Initialize Supabase client (no per-request Authorization header here)
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') || '',
-      Deno.env.get('__SUPABASE_KEY_VAR__') || ''
-    );
+    // Connect to Postgres via Supabase
+    const pool = new postgres.Pool(Deno.env.get("DATABASE_URL") || "", {
+      max: 5,
+    });
 
-    // Execute database operations
-    const { error: userError } = await supabase
-      .from('users')
-      .upsert({
-        id: owner_id,
-        email: users_storage?.email ?? null,
-        first_name: users_storage?.first_name ?? null,
-        last_name: users_storage?.last_name ?? null,
-        created_at: users_storage?.created_at ?? new Date().toISOString(),
-        updated_at: users_storage?.updated_at ?? new Date().toISOString(),
-      });
+    const connection = await pool.connect();
 
-    if (userError) {
-      throw new Error(\`Failed to upsert user: \${userError.message}\`);
-    }
+    try {
+      await connection.queryArray("BEGIN");
 
-    // Upsert app settings
-    const { error: settingsError } = await supabase
-      .from('app_settings')
-      .upsert({
-        user_id: owner_id,
-        budget: app_settings?.budget ?? null,
-        currency: app_settings?.currency ?? null,
-        max_hours: app_settings?.max_hours ?? null,
-        notifications: app_settings?.notifications ?? true,
-        period: app_settings?.period ?? 'monthly',
-        theme: app_settings?.theme ?? 'light',
-        updated_at: app_settings?.updated_at ?? new Date().toISOString(),
-      });
-
-    if (settingsError) {
-      throw new Error(\`Failed to upsert settings: \${settingsError.message}\`);
-    }
-
-    // Delete all existing lists (cascade deletes items, runs, list_shares)
-    const { error: deleteError } = await supabase
-      .from('lists')
-      .delete()
-      .eq('owner_id', owner_id);
-
-    if (deleteError) {
-      throw new Error(\`Failed to delete lists: \${deleteError.message}\`);
-    }
-
-    // Insert new lists
-    if (lists_storage?.length > 0) {
-      const listRows = lists_storage.map((l: any) => ({
-        id: l.id,
-        created_at: l.created_at ?? new Date().toISOString(),
-        description: l.description ?? null,
-        is_shared: l.is_shared ?? false,
-        item_count: l.item_count ?? 0,
-        name: l.name,
-        owner_id,
-        total_cost: l.total_cost ?? 0,
-        updated_at: l.updated_at ?? new Date().toISOString(),
-      }));
-
-      const { error: listError } = await supabase
-        .from('lists')
-        .insert(listRows);
-
-      if (listError) {
-        throw new Error(\`Failed to insert lists: \${listError.message}\`);
+      // ── 1. Upsert user profile ──────────────────────────────────────────
+      if (users_storage) {
+        await connection.queryArray(
+          \`INSERT INTO public.users (id, email, first_name, last_name, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (id) DO UPDATE SET
+               email      = EXCLUDED.email,
+               first_name = EXCLUDED.first_name,
+               last_name  = EXCLUDED.last_name,
+               updated_at = EXCLUDED.updated_at\`,
+          [
+            owner_id,
+            users_storage.email ?? null,
+            users_storage.first_name ?? null,
+            users_storage.last_name ?? null,
+            users_storage.created_at ?? new Date().toISOString(),
+            users_storage.updated_at ?? new Date().toISOString(),
+          ]
+        );
       }
-    }
 
-    // Insert items
-    if (flatItems.length > 0) {
-      const itemRows = flatItems.map((item: any) => ({
-        id: item.id,
-        category: item.category ?? null,
-        completed: item.completed ?? false,
-        created_at: item.created_at ?? new Date().toISOString(),
-        currency: item.currency ?? null,
-        description: item.description ?? null,
-        list_id: item.list_id,
-        notes: item.notes ?? null,
-        owner_id,
-        quantity: item.quantity ?? null,
-        text: item.text,
-        unit: item.unit ?? null,
-        unit_price: item.unit_price ?? null,
-        updated_at: item.updated_at ?? new Date().toISOString(),
-      }));
-
-      const { error: itemError } = await supabase
-        .from('items')
-        .insert(itemRows);
-
-      if (itemError) {
-        throw new Error(\`Failed to insert items: \${itemError.message}\`);
+      // ── 2. Upsert app settings ──────────────────────────────────────────
+      if (app_settings) {
+        await connection.queryArray(
+          \`INSERT INTO public.app_settings (user_id, budget, currency, max_hours, notifications, period, theme, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (user_id) DO UPDATE SET
+               budget        = EXCLUDED.budget,
+               currency      = EXCLUDED.currency,
+               max_hours     = EXCLUDED.max_hours,
+               notifications = EXCLUDED.notifications,
+               period        = EXCLUDED.period,
+               theme         = EXCLUDED.theme,
+               updated_at    = EXCLUDED.updated_at\`,
+          [
+            owner_id,
+            app_settings.budget ?? null,
+            app_settings.currency ?? null,
+            app_settings.max_hours ?? null,
+            app_settings.notifications ?? true,
+            app_settings.period ?? "monthly",
+            app_settings.theme ?? "light",
+            app_settings.updated_at ?? new Date().toISOString(),
+          ]
+        );
       }
-    }
 
-    // Insert runs
-    if (runs_storage?.length > 0) {
-      const runRows = runs_storage.map((r: any) => ({
-        id: r.id,
-        completion_date: r.completion_date ?? null,
-        created_at: r.created_at ?? new Date().toISOString(),
-        description: r.description ?? null,
-        is_completed: r.is_completed ?? false,
-        list_id: r.list_id,
-        name: r.name ?? null,
-        owner_id,
-        total_time: r.total_time ?? null,
-        updated_at: r.updated_at ?? new Date().toISOString(),
-      }));
+      // ── 3. Delete existing lists (cascades to items, runs, list_shares) ──
+      await connection.queryArray("DELETE FROM public.lists WHERE owner_id = $1", [owner_id]);
 
-      const { error: runError } = await supabase
-        .from('runs')
-        .insert(runRows);
-
-      if (runError) {
-        throw new Error(\`Failed to insert runs: \${runError.message}\`);
+      // ── 4. Insert lists ─────────────────────────────────────────────────
+      if (Array.isArray(lists_storage)) {
+        for (const list of lists_storage) {
+          await connection.queryArray(
+            \`INSERT INTO public.lists (id, owner_id, name, color, emoji, created_at, updated_at, deleted_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\`,
+            [
+              list.id,
+              owner_id,
+              list.name,
+              list.color ?? null,
+              list.emoji ?? null,
+              list.created_at ?? new Date().toISOString(),
+              list.updated_at ?? new Date().toISOString(),
+              list.deleted_at ?? null,
+            ]
+          );
+        }
       }
-    }
 
-    // Insert list shares
-    if (list_shares_storage?.length > 0) {
-      const shareRows = list_shares_storage.map((s: any) => ({
-        id: s.id,
-        grocery_list_id: s.grocery_list_id,
-        invited_at: s.invited_at ?? new Date().toISOString(),
-        permission: s.permission,
-        user_id: s.user_id,
-      }));
-
-      const { error: shareError } = await supabase
-        .from('list_shares')
-        .insert(shareRows);
-
-      if (shareError) {
-        throw new Error(\`Failed to insert list shares: \${shareError.message}\`);
+      // ── 5. Insert items ────────────────────────────────────────────────
+      if (flatItems.length > 0) {
+        for (const item of flatItems) {
+          await connection.queryArray(
+            \`INSERT INTO public.items (id, list_id, name, status, created_at, updated_at, deleted_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)\`,
+            [
+              item.id,
+              item.list_id,
+              item.name,
+              item.status ?? "pending",
+              item.created_at ?? new Date().toISOString(),
+              item.updated_at ?? new Date().toISOString(),
+              item.deleted_at ?? null,
+            ]
+          );
+        }
       }
+
+      // ── 6. Insert runs ─────────────────────────────────────────────────
+      if (Array.isArray(runs_storage)) {
+        for (const run of runs_storage) {
+          await connection.queryArray(
+            \`INSERT INTO public.runs (id, item_id, started_at, ended_at, duration, created_at, updated_at, deleted_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\`,
+            [
+              run.id,
+              run.item_id,
+              run.started_at ?? null,
+              run.ended_at ?? null,
+              run.duration ?? null,
+              run.created_at ?? new Date().toISOString(),
+              run.updated_at ?? new Date().toISOString(),
+              run.deleted_at ?? null,
+            ]
+          );
+        }
+      }
+
+      // ── 7. Insert list shares ──────────────────────────────────────────
+      if (Array.isArray(list_shares_storage)) {
+        for (const share of list_shares_storage) {
+          await connection.queryArray(
+            \`INSERT INTO public.list_shares (id, list_id, shared_with_user_id, permission, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6)\`,
+            [
+              share.id,
+              share.list_id,
+              share.shared_with_user_id,
+              share.permission ?? "viewer",
+              share.created_at ?? new Date().toISOString(),
+              share.updated_at ?? new Date().toISOString(),
+            ]
+          );
+        }
+      }
+
+      // ── 8. Record sync log ─────────────────────────────────────────────
+      const payloadSize = JSON.stringify(body).length;
+      await connection.queryArray(
+        \`INSERT INTO public.sync_logs (user_id, operation, payload_size, success, created_at)
+         VALUES ($1, $2, $3, $4, $5)\`,
+        [owner_id, "push", payloadSize, true, new Date().toISOString()]
+      );
+
+      await connection.queryArray("COMMIT");
+
+      return new Response(
+        JSON.stringify({ success: true, message: "Sync completed." }),
+        { status: 200, headers: { "Content-Type": "application/json", ...corsHeaders } }
+      );
+    } catch (err) {
+      await connection.queryArray("ROLLBACK").catch(() => {});
+      console.error("Transaction error:", err.message);
+      throw err;
+    } finally {
+      connection.release();
     }
-
-    // Log the sync
-    await supabase
-      .from('sync_logs')
-      .insert({
-        data_size: payloadSize,
-        schema_version: String(schema_version),
-        success: true,
-        sync_type: 'push',
-        user_id: owner_id,
-      });
-
-    return new Response(
-      JSON.stringify({ success: true, message: 'Sync successful.' }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } }
-    );
   } catch (error) {
-    console.error('Sync push error:', error);
+    console.error("sync-push error:", error);
     return new Response(
-      JSON.stringify({ success: false, message: 'Sync failed. Please try again.' }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
+      JSON.stringify({ success: false, message: "Sync failed." }),
+      { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
     );
   }
 });
 `;
-
-  const keyVar = getSupabaseKeyVarFromAuth();
-  content = content.replaceAll('__SUPABASE_KEY_VAR__', keyVar);
-
-  return content;
 }
 
-
-
-
 /**
- * Generate sync-pull Edge Function (GET /api/sync)
+ * Generate the sync-pull Edge Function
  */
 function generateSyncPullFunction() {
-  let content = `import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.103.0';
+  return `import { createClient } from "https://esm.sh/@supabase/supabase-js@2.103.0";
+import { postgres } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
 
-const SUPPORTED_SCHEMA_VERSIONS = new Set([1]);
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, content-type",
+};
 
-/**
- * Extracts user_id from the Supabase auth context.
- * The 'x-user-id' header is set by Supabase's authorization layer
- * when a valid JWT is provided.
- */
-async function verifyAuth(req: Request): Promise<string | null> {
-  const header = req.headers.get('authorization');
-  if (!header || !header.startsWith('Bearer ')) {
-    return null;
-  }
+// ─────────────────────────────────────────────────────────────────────
+// Edge Function: GET /api/sync (full-state pull)
+// ─────────────────────────────────────────────────────────────────────
 
-  const token = header.slice(7);
-  const supabase = createClient(
-    Deno.env.get('SUPABASE_URL') || '',
-    Deno.env.get('SUPABASE_ANON_KEY') || '',
-    {
-      global: {
-        headers: {
-          Authorization: \`Bearer \${token}\`,
-        },
-      },
-    }
-  );
-
-  try {
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    if (error || !user) {
-      return null;
-    }
-    return user.id;
-  } catch {
-    return null;
-  }
-}
-
-serve(async (req: Request) => {
-  // Handle CORS preflight
-  if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      },
-    });
-  }
-
-  if (req.method !== 'GET') {
-    return new Response(
-      JSON.stringify({ success: false, message: 'Method not allowed' }),
-      { status: 405, headers: { 'Content-Type': 'application/json' } }
-    );
+Deno.serve(async (req) => {
+  // Handle CORS
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    // Verify auth
-    const owner_id = await verifyAuth(req);
-    if (!owner_id) {
+    // Extract auth token from Authorization header
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return new Response(
-        JSON.stringify({ success: false, message: 'Invalid or missing authorization' }),
-        { status: 401, headers: { 'Content-Type': 'application/json' } }
+        JSON.stringify({ success: false, message: "Missing or invalid Authorization header." }),
+        { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
-    // Get schema version from query
-    const url = new URL(req.url);
-    const schema_version = Number(url.searchParams.get('schema_version')) || 1;
+    const token = authHeader.slice(7);
 
-    if (!SUPPORTED_SCHEMA_VERSIONS.has(schema_version)) {
-      return new Response(
-        JSON.stringify({ success: false, message: \`Unsupported schema_version: \${schema_version}.\` }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Initialize Supabase client (no per-request Authorization header here)
+    // Verify token with Supabase Auth (using anon key + Bearer token in global headers)
     const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') || '',
-      Deno.env.get('__SUPABASE_KEY_VAR__') || ''
+      Deno.env.get("SUPABASE_URL") || "",
+      Deno.env.get("SUPABASE_ANON_KEY") || "",
+      {
+        global: {
+          headers: {
+            Authorization: \`Bearer \${token}\`,
+          },
+        },
+      }
     );
 
-    // Fetch all data in parallel
-    const [usersData, settingsData, listsData, itemsData, runsData, sharesData] = await Promise.all([
-      supabase
-        .from('users')
-        .select('id, email, first_name, last_name, created_at, updated_at')
-        .eq('id', owner_id)
-        .single()
-        .catch(() => ({ data: null })),
-      supabase
-        .from('app_settings')
-        .select('*')
-        .eq('user_id', owner_id)
-        .single()
-        .catch(() => ({ data: null })),
-      supabase
-        .from('lists')
-        .select('*')
-        .eq('owner_id', owner_id),
-      supabase
-        .from('items')
-        .select('*')
-        .eq('owner_id', owner_id),
-      supabase
-        .from('runs')
-        .select('*')
-        .eq('owner_id', owner_id),
-      supabase
-        .from('list_shares')
-        .select('*')
-        .eq('user_id', owner_id),
-    ]);
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !user) {
+      return new Response(
+        JSON.stringify({ success: false, message: "Invalid or expired token." }),
+        { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders } }
+      );
+    }
 
-    // Reconstruct items_storage as Record<listId, Item[]>
-    const items_storage: Record<string, any[]> = {};
-    if (itemsData.data) {
-      for (const item of itemsData.data) {
+    const owner_id = user.id;
+
+    // Connect to Postgres via Supabase
+    const pool = new postgres.Pool(Deno.env.get("DATABASE_URL") || "", {
+      max: 5,
+    });
+
+    const connection = await pool.connect();
+
+    try {
+      // Fetch all data owned by this user
+
+      // Users
+      const usersResult = await connection.queryArray(
+        "SELECT id, email, first_name, last_name, created_at, updated_at FROM public.users WHERE id = $1",
+        [owner_id]
+      );
+      const user_record = usersResult.rows[0] || null;
+
+      // App settings
+      const settingsResult = await connection.queryArray(
+        "SELECT * FROM public.app_settings WHERE user_id = $1",
+        [owner_id]
+      );
+      const app_settings = settingsResult.rows[0] || null;
+
+      // Lists
+      const listsResult = await connection.queryArray(
+        "SELECT * FROM public.lists WHERE owner_id = $1",
+        [owner_id]
+      );
+      const lists_storage = listsResult.rows || [];
+
+      // Items grouped by list_id
+      const itemsResult = await connection.queryArray(
+        "SELECT * FROM public.items WHERE list_id IN (SELECT id FROM public.lists WHERE owner_id = $1)",
+        [owner_id]
+      );
+      const items_storage = {};
+      for (const item of itemsResult.rows || []) {
         if (!items_storage[item.list_id]) {
           items_storage[item.list_id] = [];
         }
         items_storage[item.list_id].push(item);
       }
-    }
 
-    // Log the pull (fire and forget)
-    supabase
-      .from('sync_logs')
-      .insert({
-        schema_version: String(schema_version),
-        success: true,
-        sync_type: 'pull',
-        user_id: owner_id,
-      })
-      .catch((err) => console.error('Sync log error:', err));
+      // Runs
+      const runsResult = await connection.queryArray(
+        "SELECT r.* FROM public.runs r JOIN public.items i ON r.item_id = i.id WHERE i.list_id IN (SELECT id FROM public.lists WHERE owner_id = $1)",
+        [owner_id]
+      );
+      const runs_storage = runsResult.rows || [];
 
-    return new Response(
-      JSON.stringify({
-        success: true,
+      // List shares
+      const sharesResult = await connection.queryArray(
+        "SELECT * FROM public.list_shares WHERE list_id IN (SELECT id FROM public.lists WHERE owner_id = $1)",
+        [owner_id]
+      );
+      const list_shares_storage = sharesResult.rows || [];
+
+      // Build response
+      const payload = {
+        schema_version: 1,
         data: {
-          users_storage: usersData.data ?? null,
-          app_settings: settingsData.data ?? null,
-          lists_storage: listsData.data ?? [],
+          users_storage: user_record,
+          app_settings: app_settings,
+          lists_storage,
           items_storage,
-          runs_storage: runsData.data ?? [],
-          list_shares_storage: sharesData.data ?? [],
+          runs_storage,
+          list_shares_storage,
         },
-        message: 'Sync successful.',
-      }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } }
-    );
+      };
+
+      // Record sync log
+      await connection.queryArray(
+        "INSERT INTO public.sync_logs (user_id, operation, payload_size, success, created_at) VALUES ($1, $2, $3, $4, $5)",
+        [owner_id, "pull", JSON.stringify(payload).length, true, new Date().toISOString()]
+      );
+
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json", ...corsHeaders },
+      });
+    } finally {
+      connection.release();
+    }
   } catch (error) {
-    console.error('Sync pull error:', error);
+    console.error("sync-pull error:", error);
     return new Response(
-      JSON.stringify({ success: false, message: 'Failed to retrieve data. Please try again.' }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
+      JSON.stringify({ success: false, message: "Sync pull failed." }),
+      { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
     );
   }
 });
 `;
-
-  const keyVar = getSupabaseKeyVarFromAuth();
-  content = content.replaceAll('__SUPABASE_KEY_VAR__', keyVar);
-
-  return content;
 }
-
 
 /**
- * Main build function
+ * Main build process
  */
 function build() {
-  console.log('🔨 Building Edge Functions...\n');
+  console.log("\n🔨 Building Edge Functions...\n");
 
-  // Ensure directories exist
-  const syncPushDir = path.join(OUTPUT_DIR, 'sync-push');
-  const syncPullDir = path.join(OUTPUT_DIR, 'sync-pull');
+  try {
+    ensureDir(SUPABASE_FUNCTIONS_DIR);
 
-  ensureDir(OUTPUT_DIR);
-  ensureDir(syncPushDir);
-  ensureDir(syncPullDir);
+    // Generate sync-push
+    const syncPushPath = path.join(SUPABASE_FUNCTIONS_DIR, 'sync-push', 'index.ts');
+    ensureDir(path.dirname(syncPushPath));
+    fs.writeFileSync(syncPushPath, generateSyncPushFunction());
+    console.log(`✓ Generated: supabase/functions/sync-push/index.ts`);
 
-  // Generate sync-push
-  const syncPushContent = generateSyncPushFunction();
-  fs.writeFileSync(path.join(syncPushDir, 'index.ts'), syncPushContent);
-  console.log('✓ Generated: supabase/functions/sync-push/index.ts');
+    // Generate sync-pull
+    const syncPullPath = path.join(SUPABASE_FUNCTIONS_DIR, 'sync-pull', 'index.ts');
+    ensureDir(path.dirname(syncPullPath));
+    fs.writeFileSync(syncPullPath, generateSyncPullFunction());
+    console.log(`✓ Generated: supabase/functions/sync-pull/index.ts`);
 
-  // Generate sync-pull
-  const syncPullContent = generateSyncPullFunction();
-  fs.writeFileSync(path.join(syncPullDir, 'index.ts'), syncPullContent);
-  console.log('✓ Generated: supabase/functions/sync-pull/index.ts');
-
-  // Create deno.json for Edge Functions
-  const denoConfig = {
-    imports: {
-      'std/': 'https://deno.land/std@0.208.0/',
-      '@supabase/': 'https://esm.sh/@supabase/',
-    },
-  };
-  fs.writeFileSync(path.join(OUTPUT_DIR, 'deno.json'), JSON.stringify(denoConfig, null, 2));
-  console.log('✓ Generated: supabase/functions/deno.json');
-
-  console.log('\n✅ Build complete! Edge Functions ready for deployment.\n');
-  console.log('Next steps:');
-  console.log('  1. Verify supabase/functions/ structure');
-  console.log('  2. Commit changes to git');
-  console.log('  3. Push to repository (GitHub Actions will deploy automatically)');
-  console.log('\nOr deploy manually:');
-  console.log('  supabase functions deploy sync-push');
-  console.log('  supabase functions deploy sync-pull');
+    console.log("\n✅ Build complete! Ready to deploy.\n");
+    console.log("Next steps:");
+    console.log("  1. Test locally: supabase functions serve");
+    console.log("  2. Deploy: supabase functions deploy sync-push sync-pull");
+    console.log("  3. Verify: supabase functions list\n");
+  } catch (error) {
+    console.error("❌ Build failed:", error.message);
+    process.exit(1);
+  }
 }
 
+// Run the build
 build();

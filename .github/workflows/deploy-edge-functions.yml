@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - serverless
+      - main
     paths:
       - 'app.cjs'
       - 'auth.cjs'
@@ -22,10 +23,8 @@ jobs:
     
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
 
     steps:
       - name: Checkout code
@@ -35,6 +34,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
@@ -49,22 +49,42 @@ jobs:
 
       - name: Deploy Edge Functions to Supabase
         run: |
-          supabase functions deploy sync-push
-          supabase functions deploy sync-pull
+          echo "🚀 Deploying sync-push..."
+          supabase functions deploy sync-push --project-ref "${{ secrets.SUPABASE_PROJECT_ID }}"
+          
+          echo "🚀 Deploying sync-pull..."
+          supabase functions deploy sync-pull --project-ref "${{ secrets.SUPABASE_PROJECT_ID }}"
 
       - name: Verify deployment
         run: |
-          supabase functions list
+          echo "📋 Deployed Functions:"
+          supabase functions list --project-ref "${{ secrets.SUPABASE_PROJECT_ID }}"
 
-      - name: Create deployment comment
-        if: github.event_name == 'push'
+      - name: Update deployment status
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: '✅ Edge Functions deployed successfully!\n\n- sync-push: `POST /api/sync`\n- sync-pull: `GET /api/sync`'
-            })
+            const status = '${{ job.status }}' === 'success' ? '✅ Success' : '❌ Failed';
+            const message = `
+            ## $${status} - Edge Functions Deployment
+            
+            **Branch**: ${{ github.ref_name }}
+            **Commit**: ${{ github.sha }}
+            
+            **Functions deployed**:
+            - \`sync-push\` → POST /api/sync
+            - \`sync-pull\` → GET /api/sync
+            
+            **View in Supabase**: [${{ secrets.SUPABASE_PROJECT_ID }}](https://app.supabase.com/project/${{ secrets.SUPABASE_PROJECT_ID }}/functions)
+            `;
+            
+            if (context.issue && context.issue.number) {
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: message
+              });
+            }
         continue-on-error: true
