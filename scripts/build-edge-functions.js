@@ -120,7 +120,14 @@ async function verifyAuth(req: Request): Promise<string | null> {
   const token = header.slice(7);
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL') || '',
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+    Deno.env.get('SUPABASE_ANON_KEY') || '',
+    {
+      global: {
+        headers: {
+          Authorization: \`Bearer \${token}\`,
+        },
+      },
+    }
   );
 
   try {
@@ -383,31 +390,31 @@ const SUPPORTED_SCHEMA_VERSIONS = new Set([1]);
  * The 'x-user-id' header is set by Supabase's authorization layer
  * when a valid JWT is provided.
  */
-function verifyAuth(req: Request): string | null {
-  // Supabase sets x-user-id header when auth is successful
-  const userId = req.headers.get('x-user-id');
-  if (userId) {
-    return userId;
-  }
-
-  // Fallback: try to extract from Authorization header if Supabase auth context isn't available
-  const authHeader = req.headers.get('authorization');
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+async function verifyAuth(req: Request): Promise<string | null> {
+  const header = req.headers.get('authorization');
+  if (!header || !header.startsWith('Bearer ')) {
     return null;
   }
 
-  // Extract just the sub claim from JWT without verification
-  try {
-    const token = authHeader.slice(7);
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
+  const token = header.slice(7);
+  const supabase = createClient(
+    Deno.env.get('SUPABASE_URL') || '',
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '',
+    {
+      global: {
+        headers: {
+          Authorization: \`Bearer \${token}\`,
+        },
+      },
+    }
+  );
 
-    const payload = JSON.parse(
-      new TextDecoder().decode(
-        Deno.core.decode(parts[1])
-      )
-    );
-    return payload.sub || null;
+  try {
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (error || !user) {
+      return null;
+    }
+    return user.id;
   } catch {
     return null;
   }
