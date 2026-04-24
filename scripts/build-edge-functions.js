@@ -53,14 +53,14 @@ function getEdgeClientOptions() {
 function getSupabaseKeyVarFromAuth() {
   try {
     const authPath = path.join(BACKEND_DIR, 'auth.cjs');
-    if (!fs.existsSync(authPath)) return 'SUPABASE_SERVICE_ROLE_KEY';
+    if (!fs.existsSync(authPath)) return 'SUPABASE_ANON_KEY';
     const txt = fs.readFileSync(authPath, 'utf8');
     const m2 = txt.match(/createClient\s*\(\s*process\.env\.([A-Z0-9_]+)\s*,\s*process\.env\.([A-Z0-9_]+)/m);
     if (m2 && m2[2]) return m2[2];
-    return 'SUPABASE_SERVICE_ROLE_KEY';
+    return 'SUPABASE_ANON_KEY';
   } catch (err) {
     console.warn('Failed to detect supabase key var from auth.cjs:', err.message);
-    return 'SUPABASE_SERVICE_ROLE_KEY';
+    return 'SUPABASE_ANON_KEY';
   }
 }
 
