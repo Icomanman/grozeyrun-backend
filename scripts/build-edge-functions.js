@@ -47,6 +47,24 @@ function getEdgeClientOptions() {
 }
 
 /**
+ * Detect which SUPABASE key variable the backend `auth.cjs` uses
+ * by inspecting the createClient call. Returns the env var name string.
+ */
+function getSupabaseKeyVarFromAuth() {
+  try {
+    const authPath = path.join(BACKEND_DIR, 'auth.cjs');
+    if (!fs.existsSync(authPath)) return 'SUPABASE_SERVICE_ROLE_KEY';
+    const txt = fs.readFileSync(authPath, 'utf8');
+    const m2 = txt.match(/createClient\s*\(\s*process\.env\.([A-Z0-9_]+)\s*,\s*process\.env\.([A-Z0-9_]+)/m);
+    if (m2 && m2[2]) return m2[2];
+    return 'SUPABASE_SERVICE_ROLE_KEY';
+  } catch (err) {
+    console.warn('Failed to detect supabase key var from auth.cjs:', err.message);
+    return 'SUPABASE_SERVICE_ROLE_KEY';
+  }
+}
+
+/**
  * Generate sync-push Edge Function (POST /api/sync)
  */
 function generateSyncPushFunction() {
@@ -401,6 +419,8 @@ serve(async (req: Request) => {
 }
 
 
+
+
 /**
  * Generate sync-pull Edge Function (GET /api/sync)
  */
@@ -563,8 +583,19 @@ serve(async (req: Request) => {
 });
 `;
 
+  const edgeOpts = getEdgeClientOptions();
+  const edgeOptsArg = edgeOpts ? ', ' + edgeOpts : '';
+  content = content.replace('__EDGE_CLIENT_OPTIONS__', edgeOptsArg);
+  content = content.replace('__EDGE_CLIENT_PLACEHOLDER__', '');
+
+  const keyVar = getSupabaseKeyVarFromAuth();
+  const keyReplacement = `Deno.env.get('${keyVar}') || ''`;
+  content = content.replace(/Deno\.env\.get\('SUPABASE_SERVICE_ROLE_KEY'\)\s*\|\|\s*''/g, keyReplacement);
+  content = content.replace(/Deno\.env\.get\('SUPABASE_ANON_KEY'\)\s*\|\|\s*''/g, keyReplacement);
+
   return content;
 }
+
 
 /**
  * Main build function
