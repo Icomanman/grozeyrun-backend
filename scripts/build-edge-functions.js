@@ -29,11 +29,30 @@ function ensureDir(dir) {
 }
 
 /**
+ * Read EDGE client options from `auth.cjs` between marker comments.
+ * Returns the literal JS object text (without the leading comma).
+ */
+function getEdgeClientOptions() {
+  try {
+    const authPath = path.join(BACKEND_DIR, 'auth.cjs');
+    if (!fs.existsSync(authPath)) return '';
+    const txt = fs.readFileSync(authPath, 'utf8');
+    const m = txt.match(/\/\*\s*EDGE_CLIENT_CONFIG_START\s*([\s\S]*?)\s*EDGE_CLIENT_CONFIG_END\s*\*\//m);
+    if (!m) return '';
+    return m[1].trim();
+  } catch (err) {
+    console.warn('Failed to read EDGE client config from auth.cjs:', err.message);
+    return '';
+  }
+}
+
+/**
  * Generate sync-push Edge Function (POST /api/sync)
  */
 function generateSyncPushFunction() {
-  const content = `import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
+  let content = `import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.103.0';
+__EDGE_CLIENT_PLACEHOLDER__
 
 // Types
 interface SyncPayload {
@@ -49,6 +68,7 @@ interface SyncPayload {
 }
 
 interface RequestBody {
+
   schema_version: number;
   data: any;
 }
@@ -207,7 +227,7 @@ serve(async (req: Request) => {
     // Initialize Supabase client
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') || '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''__EDGE_CLIENT_OPTIONS__
     );
 
     // Execute database operations
@@ -373,14 +393,19 @@ serve(async (req: Request) => {
 });
 `;
 
+  const edgeOpts = getEdgeClientOptions();
+  const edgeOptsArg = edgeOpts ? ', ' + edgeOpts : '';
+  content = content.replace('__EDGE_CLIENT_OPTIONS__', edgeOptsArg);
+  content = content.replace('__EDGE_CLIENT_PLACEHOLDER__', '');
   return content;
 }
+
 
 /**
  * Generate sync-pull Edge Function (GET /api/sync)
  */
 function generateSyncPullFunction() {
-  const content = `import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
+  let content = `import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.103.0';
 
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1]);
@@ -399,14 +424,7 @@ async function verifyAuth(req: Request): Promise<string | null> {
   const token = header.slice(7);
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL') || '',
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '',
-    {
-      global: {
-        headers: {
-          Authorization: \`Bearer \${token}\`,
-        },
-      },
-    }
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''__EDGE_CLIENT_OPTIONS__
   );
 
   try {
@@ -463,7 +481,7 @@ serve(async (req: Request) => {
     // Initialize Supabase client
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') || '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''__EDGE_CLIENT_OPTIONS__
     );
 
     // Fetch all data in parallel
