@@ -15,7 +15,7 @@ function ensureDir(dir) {
 
 function generateSyncPushFunction() {
   return `import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/v135/@supabase/supabase-js@2.38.2/dist/module.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -321,7 +321,7 @@ serve(async (req) => {
 
 function generateSyncPullFunction() {
   return `import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://esm.sh/v135/@supabase/supabase-js@2.38.2/dist/module.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
