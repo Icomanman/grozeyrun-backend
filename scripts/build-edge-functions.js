@@ -32,19 +32,8 @@ function ensureDir(dir) {
  * Read EDGE client options from `auth.cjs` between marker comments.
  * Returns the literal JS object text (without the leading comma).
  */
-function getEdgeClientOptions() {
-  try {
-    const authPath = path.join(BACKEND_DIR, 'auth.cjs');
-    if (!fs.existsSync(authPath)) return '';
-    const txt = fs.readFileSync(authPath, 'utf8');
-    const m = txt.match(/\/\*\s*EDGE_CLIENT_CONFIG_START\s*([\s\S]*?)\s*EDGE_CLIENT_CONFIG_END\s*\*\//m);
-    if (!m) return '';
-    return m[1].trim();
-  } catch (err) {
-    console.warn('Failed to read EDGE client config from auth.cjs:', err.message);
-    return '';
-  }
-}
+// getEdgeClientOptions removed — not used
+
 
 /**
  * Detect which SUPABASE key variable the backend `auth.cjs` uses
@@ -70,7 +59,6 @@ function getSupabaseKeyVarFromAuth() {
 function generateSyncPushFunction() {
   let content = `import { serve } from 'https://deno.land/std@0.208.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.103.0';
-__EDGE_CLIENT_PLACEHOLDER__
 
 // Types
 interface SyncPayload {
@@ -242,10 +230,10 @@ serve(async (req: Request) => {
     const { items_storage, lists_storage, runs_storage, users_storage, app_settings, list_shares_storage } = data;
     const flatItems = Object.values(items_storage ?? {}).flat();
 
-    // Initialize Supabase client
+    // Initialize Supabase client (no per-request Authorization header here)
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') || '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''__EDGE_CLIENT_OPTIONS__
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
     );
 
     // Execute database operations
@@ -411,10 +399,15 @@ serve(async (req: Request) => {
 });
 `;
 
-  const edgeOpts = getEdgeClientOptions();
-  const edgeOptsArg = edgeOpts ? ', ' + edgeOpts : '';
-  content = content.replace('__EDGE_CLIENT_OPTIONS__', edgeOptsArg);
-  content = content.replace('__EDGE_CLIENT_PLACEHOLDER__', '');
+  const keyVar = getSupabaseKeyVarFromAuth();
+  const keyReplacement = `Deno.env.get('${keyVar}') || ''`;
+  content = content.replace(/Deno\.env\.get\('SUPABASE_SERVICE_ROLE_KEY'\)\s*\|\|\s*''/g, keyReplacement);
+  content = content.replace(/Deno\.env\.get\('SUPABASE_ANON_KEY'\)\s*\|\|\s*''/g, keyReplacement);
+
+  // Sanitize any leftover placeholders
+  content = content.replaceAll("''__EDGE_CLIENT_OPTIONS__", "''");
+  content = content.replaceAll('__EDGE_CLIENT_OPTIONS__', '');
+  content = content.replaceAll('__EDGE_CLIENT_PLACEHOLDER__', '');
   return content;
 }
 
@@ -444,7 +437,14 @@ async function verifyAuth(req: Request): Promise<string | null> {
   const token = header.slice(7);
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL') || '',
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''__EDGE_CLIENT_OPTIONS__
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '',
+    {
+      global: {
+        headers: {
+          Authorization: \`Bearer \${token}\`,
+        },
+      },
+    }
   );
 
   try {
@@ -498,10 +498,10 @@ serve(async (req: Request) => {
       );
     }
 
-    // Initialize Supabase client
+    // Initialize Supabase client (no per-request Authorization header here)
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') || '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''__EDGE_CLIENT_OPTIONS__
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
     );
 
     // Fetch all data in parallel
@@ -582,11 +582,6 @@ serve(async (req: Request) => {
   }
 });
 `;
-
-  const edgeOpts = getEdgeClientOptions();
-  const edgeOptsArg = edgeOpts ? ', ' + edgeOpts : '';
-  content = content.replace('__EDGE_CLIENT_OPTIONS__', edgeOptsArg);
-  content = content.replace('__EDGE_CLIENT_PLACEHOLDER__', '');
 
   const keyVar = getSupabaseKeyVarFromAuth();
   const keyReplacement = `Deno.env.get('${keyVar}') || ''`;
