@@ -62,8 +62,7 @@ function createSupabaseClient(token) {
 // Validation functions (from validations.cjs)
 // ─────────────────────────────────────────────────────────────────────
 
-const REQUIRED_DATA_KEYS = ["items_storage", "lists_storage", "runs_storage"];
-const OPTIONAL_DATA_KEYS = ["users_storage", "app_settings"];
+const REQUIRED_DATA_KEYS = ["items_storage", "lists_storage", "runs_storage", "users_storage", "app_settings"];
 const OPTIONAL_ARRAY_KEYS = ["list_shares_storage"];
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1]);
 
@@ -71,13 +70,11 @@ function validateSyncPayload(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return "Missing or invalid data payload.";
   }
-  // Check required keys
   for (const key of REQUIRED_DATA_KEYS) {
     if (!(key in data)) {
       return \`Missing required field: data.\${key}.\`;
     }
   }
-  // Validate structure of required fields
   if (typeof data.items_storage !== "object" || Array.isArray(data.items_storage)) {
     return "data.items_storage must be a plain object (Record<listId, ListItem[]>).";
   }
@@ -87,14 +84,12 @@ function validateSyncPayload(data) {
   if (!Array.isArray(data.runs_storage)) {
     return "data.runs_storage must be an array.";
   }
-  // Validate optional fields if present
-  if ("users_storage" in data && data.users_storage !== null && (typeof data.users_storage !== "object" || Array.isArray(data.users_storage))) {
-    return "data.users_storage must be a plain object or null.";
+  if (typeof data.users_storage !== "object" || Array.isArray(data.users_storage)) {
+    return "data.users_storage must be a plain object.";
   }
-  if ("app_settings" in data && data.app_settings !== null && (typeof data.app_settings !== "object" || Array.isArray(data.app_settings))) {
-    return "data.app_settings must be a plain object or null.";
+  if (typeof data.app_settings !== "object" || Array.isArray(data.app_settings)) {
+    return "data.app_settings must be a plain object.";
   }
-  // Validate optional array keys
   for (const key of OPTIONAL_ARRAY_KEYS) {
     if (key in data && !Array.isArray(data[key])) {
       return \`data.\${key} must be an array when present.\`;
@@ -104,16 +99,18 @@ function validateSyncPayload(data) {
 }
 
 function validateOwnership(data, owner_id) {
-  const { users_storage, lists_storage } = data;
-  if (users_storage && users_storage.id && users_storage.id !== owner_id) {
-    return "User ID mismatch.";
-  }
-  if (Array.isArray(lists_storage)) {
-    for (const list of lists_storage) {
-      if (list.owner_id && list.owner_id !== owner_id) {
-        return "List ownership mismatch.";
-      }
+  for (const list of data.lists_storage) {
+    if (list.owner_id && list.owner_id !== owner_id) {
+      return "Ownership mismatch in lists_storage.";
     }
+  }
+  for (const run of data.runs_storage) {
+    if (run.owner_id && run.owner_id !== owner_id) {
+      return "Ownership mismatch in runs_storage.";
+    }
+  }
+  if (data.users_storage && data.users_storage.id && data.users_storage.id !== owner_id) {
+    return "Ownership mismatch in users_storage.";
   }
   return null;
 }
