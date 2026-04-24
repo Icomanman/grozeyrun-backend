@@ -62,8 +62,8 @@ function createSupabaseClient(token) {
 // Validation functions (from validations.cjs)
 // ─────────────────────────────────────────────────────────────────────
 
-const REQUIRED_DATA_KEYS = ["items_storage", "lists_storage", "runs_storage", "users_storage", "app_settings"];
-const OPTIONAL_ARRAY_KEYS = ["list_shares_storage"];
+const REQUIRED_DATA_KEYS = ["items_storage", "lists_storage", "runs_storage", "app_settings"];
+const OPTIONAL_ARRAY_KEYS = ["list_shares_storage", "users_storage"];
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1]);
 
 function validateSyncPayload(data) {

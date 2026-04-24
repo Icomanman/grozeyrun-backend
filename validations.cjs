@@ -9,9 +9,9 @@
  * is responsible for data integrity before sending (init-requirements.md §Others).
  */
 
-const REQUIRED_DATA_KEYS = ['items_storage', 'lists_storage', 'runs_storage', 'users_storage', 'app_settings'];
+const REQUIRED_DATA_KEYS = ['items_storage', 'lists_storage', 'runs_storage', 'app_settings'];
 // list_shares_storage is optional — omitting it is valid (no shares to sync)
-const OPTIONAL_ARRAY_KEYS = ['list_shares_storage'];
+const OPTIONAL_ARRAY_KEYS = ['users_storage', 'list_shares_storage'];
 
 /**
  * Validates the top-level structure of the sync data payload.
