@@ -233,7 +233,7 @@ serve(async (req: Request) => {
     // Initialize Supabase client (no per-request Authorization header here)
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') || '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      Deno.env.get('__SUPABASE_KEY_VAR__') || ''
     );
 
     // Execute database operations
@@ -400,14 +400,8 @@ serve(async (req: Request) => {
 `;
 
   const keyVar = getSupabaseKeyVarFromAuth();
-  const keyReplacement = `Deno.env.get('${keyVar}') || ''`;
-  content = content.replace(/Deno\.env\.get\('SUPABASE_SERVICE_ROLE_KEY'\)\s*\|\|\s*''/g, keyReplacement);
-  content = content.replace(/Deno\.env\.get\('SUPABASE_ANON_KEY'\)\s*\|\|\s*''/g, keyReplacement);
+  content = content.replaceAll('__SUPABASE_KEY_VAR__', keyVar);
 
-  // Sanitize any leftover placeholders
-  content = content.replaceAll("''__EDGE_CLIENT_OPTIONS__", "''");
-  content = content.replaceAll('__EDGE_CLIENT_OPTIONS__', '');
-  content = content.replaceAll('__EDGE_CLIENT_PLACEHOLDER__', '');
   return content;
 }
 
@@ -437,7 +431,7 @@ async function verifyAuth(req: Request): Promise<string | null> {
   const token = header.slice(7);
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL') || '',
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '',
+    Deno.env.get('SUPABASE_ANON_KEY') || '',
     {
       global: {
         headers: {
@@ -501,7 +495,7 @@ serve(async (req: Request) => {
     // Initialize Supabase client (no per-request Authorization header here)
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') || '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+      Deno.env.get('__SUPABASE_KEY_VAR__') || ''
     );
 
     // Fetch all data in parallel
@@ -584,9 +578,7 @@ serve(async (req: Request) => {
 `;
 
   const keyVar = getSupabaseKeyVarFromAuth();
-  const keyReplacement = `Deno.env.get('${keyVar}') || ''`;
-  content = content.replace(/Deno\.env\.get\('SUPABASE_SERVICE_ROLE_KEY'\)\s*\|\|\s*''/g, keyReplacement);
-  content = content.replace(/Deno\.env\.get\('SUPABASE_ANON_KEY'\)\s*\|\|\s*''/g, keyReplacement);
+  content = content.replaceAll('__SUPABASE_KEY_VAR__', keyVar);
 
   return content;
 }
