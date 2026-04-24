@@ -40,25 +40,20 @@ function decodeJWT(token) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Helper: Create Supabase client with auth context
+// Helper: Create Supabase client with service role (bypasses RLS)
 // ─────────────────────────────────────────────────────────────────────
 
 function createSupabaseClient(token) {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   
-  if (!supabaseUrl || !supabaseAnonKey) {
-    throw new Error("Missing SUPABASE_URL or SUPABASE_ANON_KEY");
+  if (!supabaseUrl || !supabaseServiceKey) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
   }
 
-  return createClient(supabaseUrl, supabaseAnonKey, {
+  return createClient(supabaseUrl, supabaseServiceKey, {
     auth: {
       persistSession: false,
-    },
-    global: {
-      headers: {
-        Authorization: \`Bearer \${token}\`,
-      },
     },
   });
 }
@@ -67,7 +62,8 @@ function createSupabaseClient(token) {
 // Validation functions (from validations.cjs)
 // ─────────────────────────────────────────────────────────────────────
 
-const REQUIRED_DATA_KEYS = ["items_storage", "lists_storage", "runs_storage", "users_storage", "app_settings"];
+const REQUIRED_DATA_KEYS = ["items_storage", "lists_storage", "runs_storage"];
+const OPTIONAL_DATA_KEYS = ["users_storage", "app_settings"];
 const OPTIONAL_ARRAY_KEYS = ["list_shares_storage"];
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1]);
 
@@ -75,11 +71,13 @@ function validateSyncPayload(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return "Missing or invalid data payload.";
   }
+  // Check required keys
   for (const key of REQUIRED_DATA_KEYS) {
     if (!(key in data)) {
       return \`Missing required field: data.\${key}.\`;
     }
   }
+  // Validate structure of required fields
   if (typeof data.items_storage !== "object" || Array.isArray(data.items_storage)) {
     return "data.items_storage must be a plain object (Record<listId, ListItem[]>).";
   }
@@ -89,12 +87,14 @@ function validateSyncPayload(data) {
   if (!Array.isArray(data.runs_storage)) {
     return "data.runs_storage must be an array.";
   }
-  if (typeof data.users_storage !== "object" || Array.isArray(data.users_storage)) {
-    return "data.users_storage must be a plain object.";
+  // Validate optional fields if present
+  if ("users_storage" in data && data.users_storage !== null && (typeof data.users_storage !== "object" || Array.isArray(data.users_storage))) {
+    return "data.users_storage must be a plain object or null.";
   }
-  if (typeof data.app_settings !== "object" || Array.isArray(data.app_settings)) {
-    return "data.app_settings must be a plain object.";
+  if ("app_settings" in data && data.app_settings !== null && (typeof data.app_settings !== "object" || Array.isArray(data.app_settings))) {
+    return "data.app_settings must be a plain object or null.";
   }
+  // Validate optional array keys
   for (const key of OPTIONAL_ARRAY_KEYS) {
     if (key in data && !Array.isArray(data[key])) {
       return \`data.\${key} must be an array when present.\`;
@@ -346,25 +346,20 @@ function decodeJWT(token) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Helper: Create Supabase client with auth context
+// Helper: Create Supabase client with service role (bypasses RLS)
 // ─────────────────────────────────────────────────────────────────────
 
 function createSupabaseClient(token) {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   
-  if (!supabaseUrl || !supabaseAnonKey) {
-    throw new Error("Missing SUPABASE_URL or SUPABASE_ANON_KEY");
+  if (!supabaseUrl || !supabaseServiceKey) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
   }
 
-  return createClient(supabaseUrl, supabaseAnonKey, {
+  return createClient(supabaseUrl, supabaseServiceKey, {
     auth: {
       persistSession: false,
-    },
-    global: {
-      headers: {
-        Authorization: \`Bearer \${token}\`,
-      },
     },
   });
 }
