@@ -9,9 +9,19 @@ const { createClient } = require('@supabase/supabase-js');
  */
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  process.env.SUPABASE_ANON_KEY,
   { auth: { persistSession: false, autoRefreshToken: false } }
 );
+
+/* EDGE_CLIENT_CONFIG_START
+{
+  global: {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  }
+}
+EDGE_CLIENT_CONFIG_END */
 
 /**
  * Auth middleware — verifies the Supabase JWT in Authorization: Bearer <token>.
