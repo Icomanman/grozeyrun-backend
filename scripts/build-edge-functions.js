@@ -30,14 +30,28 @@ function ensureDir(dir) {
  * Generate the sync-push Edge Function
  */
 function generateSyncPushFunction() {
-  return `import { createClient } from "https://esm.sh/@supabase/supabase-js@2.103.0";
-import { postgres } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
+  return `import { postgres } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "authorization, x-client-info, content-type",
 };
+
+// ─────────────────────────────────────────────────────────────────────
+// Helper: Decode JWT without verification (Edge Functions pattern)
+// ─────────────────────────────────────────────────────────────────────
+
+function decodeJWT(token) {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) throw new Error("Invalid token format");
+    const payload = JSON.parse(atob(parts[1]));
+    return payload;
+  } catch (e) {
+    return null;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Validation functions (from validations.cjs)
@@ -105,41 +119,28 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Extract auth token from Authorization header
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    // 1. Extract auth token from Authorization header
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
       return new Response(
         JSON.stringify({ success: false, message: "Missing or invalid Authorization header." }),
         { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
-    const token = authHeader.slice(7);
+    const token = authHeader.replace("Bearer ", "");
 
-    // Verify token with Supabase Auth (using anon key + Bearer token in global headers)
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL") || "",
-      Deno.env.get("SUPABASE_ANON_KEY") || "",
-      {
-        global: {
-          headers: {
-            Authorization: \`Bearer \${token}\`,
-          },
-        },
-      }
-    );
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) {
+    // 2. Decode JWT (DO NOT call supabase.auth.getUser - it times out)
+    const payload = decodeJWT(token);
+    if (!payload || !payload.sub) {
       return new Response(
-        JSON.stringify({ success: false, message: "Invalid or expired token." }),
+        JSON.stringify({ success: false, message: "Invalid token." }),
         { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
-    const owner_id = user.id;
-
-    // Parse request body
+    const owner_id = payload.sub;
+    // 3. Parse request body
     const body = await req.json();
     const { schema_version, data } = body;
 
@@ -342,14 +343,28 @@ Deno.serve(async (req) => {
  * Generate the sync-pull Edge Function
  */
 function generateSyncPullFunction() {
-  return `import { createClient } from "https://esm.sh/@supabase/supabase-js@2.103.0";
-import { postgres } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
+  return `import { postgres } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
   "Access-Control-Allow-Headers": "authorization, x-client-info, content-type",
 };
+
+// ─────────────────────────────────────────────────────────────────────
+// Helper: Decode JWT without verification (Edge Functions pattern)
+// ─────────────────────────────────────────────────────────────────────
+
+function decodeJWT(token) {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) throw new Error("Invalid token format");
+    const payload = JSON.parse(atob(parts[1]));
+    return payload;
+  } catch (e) {
+    return null;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Edge Function: GET /api/sync (full-state pull)
@@ -362,41 +377,28 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Extract auth token from Authorization header
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    // 1. Extract auth token from Authorization header
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
       return new Response(
         JSON.stringify({ success: false, message: "Missing or invalid Authorization header." }),
         { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
-    const token = authHeader.slice(7);
+    const token = authHeader.replace("Bearer ", "");
 
-    // Verify token with Supabase Auth (using anon key + Bearer token in global headers)
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL") || "",
-      Deno.env.get("SUPABASE_ANON_KEY") || "",
-      {
-        global: {
-          headers: {
-            Authorization: \`Bearer \${token}\`,
-          },
-        },
-      }
-    );
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) {
+    // 2. Decode JWT (DO NOT call supabase.auth.getUser - it times out)
+    const payload = decodeJWT(token);
+    if (!payload || !payload.sub) {
       return new Response(
-        JSON.stringify({ success: false, message: "Invalid or expired token." }),
+        JSON.stringify({ success: false, message: "Invalid token." }),
         { status: 401, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
-    const owner_id = user.id;
-
-    // Connect to Postgres via Supabase
+    const owner_id = payload.sub;
+    // 3. Connect to Postgres via Supabase
     const pool = new postgres.Pool(Deno.env.get("DATABASE_URL") || "", {
       max: 5,
     });
