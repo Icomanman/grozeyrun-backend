@@ -1,4 +1,6 @@
 
+import { parseErrorMessage } from './utils';
+
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1]);
 
 type SyncPullInput = {
@@ -51,7 +53,7 @@ export default async function syncPull({ user_id, schema_version, db }: SyncPull
                 (id, schema_version, success, sync_type, user_id)
             VALUES
                 (gen_random_uuid(), ${String(schema_version)}, true, 'pull', ${owner_id})
-        `.catch((logErr: any) => console.error('[sync pull] log write failed:', logErr.message));
+        `.catch((logErr: unknown) => console.error('[sync pull] log write failed:', logErr instanceof Error ? logErr.message : new Error(String(logErr)).message));
 
         return {
             users_storage: users[0] ?? null,
@@ -61,15 +63,16 @@ export default async function syncPull({ user_id, schema_version, db }: SyncPull
             runs_storage: runs,
             list_shares_storage: shares,
         };
-    } catch (err: any) {
-        console.error('[sync pull] error:', err.message);
+    } catch (err: unknown) {
+        const errorMessage: string = parseErrorMessage(err);
+        console.error('[sync pull] error:', errorMessage);
         sql`
             INSERT INTO public.sync_logs
                 (id, schema_version, success, sync_type, user_id, message)
             VALUES
-                (gen_random_uuid(), ${String(schema_version)}, false, 'pull', ${owner_id}, ${err.message})
-        `.catch((logErr: any) => console.error('[sync pull] log write failed:', logErr.message));
+                (gen_random_uuid(), ${String(schema_version)}, false, 'pull', ${owner_id}, ${errorMessage})
+        `.catch((logErr: unknown) => console.error('[sync pull] log write failed:', parseErrorMessage(logErr)));
 
-        throw new Error(); // we have to be explicit here what went wrong.
+        throw new Error(`Sync pull failed with:\n***\n${errorMessage}\n***`);
     }
 };
